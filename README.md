@@ -1,4 +1,4 @@
-# LeaguePred 🎮📊
+# LeaguePred
 
 ## A Ground-Up ELO Prediction System for Professional League of Legends
 
