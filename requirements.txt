@@ -1,14 +1,18 @@
 # Core Data
 pandas>=2.0.0
 numpy>=1.24.0
+pyyaml>=6.0
 
 # Machine Learning
 scikit-learn>=1.3.0
+lightgbm>=4.0.0
 xgboost>=2.0.0
+shap>=0.42.0
 
 # Visualization
 matplotlib>=3.7.0
 seaborn>=0.12.0
+plotly>=5.15.0
 
 # Utilities
 requests>=2.31.0

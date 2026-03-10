@@ -1,0 +1,146 @@
+# =============================================================================
+# LeaguePred Configuration
+# =============================================================================
+# All tunable parameters for the prediction ensemble.
+# Adjust these values based on backtest results.
+
+# -----------------------------------------------------------------------------
+# ELO Settings
+# -----------------------------------------------------------------------------
+elo:
+  default_rating: 1500.0
+  k_factor: 32.0
+  scale_factor: 400.0
+  season_regression: 0.3
+  roster_change_regression: 0.5
+
+# -----------------------------------------------------------------------------
+# Data Pipeline
+# -----------------------------------------------------------------------------
+data:
+  # Path to Oracle's Elixir CSV exports
+  oracle_csv_dir: "data/oracle"
+  # Processed output directory
+  processed_dir: "data/processed"
+  # Columns expected from Oracle's Elixir game-level data
+  required_columns:
+    - gameid
+    - date
+    - league
+    - patch
+    - side
+    - teamname
+    - result
+    - gamelength
+    - golddiffat15
+    - firstdragon
+    - firstherald
+    - kills
+    - deaths
+    - assists
+    - dragons
+    - barons
+    - towers
+    - champion
+    - position
+    - playername
+  # Regions to include
+  leagues:
+    - LCK
+    - LPL
+    - LEC
+    - LCS
+    - PCS
+    - VCS
+    - MSI
+    - Worlds
+
+# -----------------------------------------------------------------------------
+# Archetype Model
+# -----------------------------------------------------------------------------
+archetype:
+  # Features used to build team performance vectors
+  features:
+    - avg_gold_diff_15
+    - first_dragon_pct
+    - first_herald_pct
+    - kd_ratio
+    - avg_game_length
+  # Reference team for archetype similarity
+  reference_team: "Gen.G"
+  # Minimum games to compute a stable archetype vector
+  min_games: 10
+  # How many recent games to use for archetype calculation (0 = all)
+  lookback_games: 0
+
+# -----------------------------------------------------------------------------
+# Composition Features
+# -----------------------------------------------------------------------------
+composition:
+  # Champion timing classification thresholds (avg game length for peak power)
+  early_game_threshold_minutes: 25.0
+  late_game_threshold_minutes: 35.0
+  # PCA components to extract from champion interaction matrix
+  pca_components: 8
+  # Minimum champion appearances to include in interaction matrix
+  min_champion_appearances: 20
+
+# -----------------------------------------------------------------------------
+# Player Mastery
+# -----------------------------------------------------------------------------
+player_mastery:
+  # Exponential decay half-life for recency weighting (days)
+  recency_half_life_days: 30
+  # Minimum competitive games on a champion before counting mastery
+  min_games: 3
+  # Patch validity: threshold for win rate change to zero out mastery
+  patch_winrate_change_threshold: 0.10
+
+# -----------------------------------------------------------------------------
+# Ensemble Model
+# -----------------------------------------------------------------------------
+ensemble:
+  # LightGBM hyperparameters
+  lgbm_params:
+    n_estimators: 200
+    learning_rate: 0.05
+    max_depth: 4
+    num_leaves: 15
+    min_child_samples: 20
+    subsample: 0.8
+    colsample_bytree: 0.8
+    reg_alpha: 0.1
+    reg_lambda: 1.0
+    random_state: 42
+  # Train/test split ratio (chronological)
+  test_size: 0.2
+  # Feature names used in the ensemble
+  features:
+    - elo_win_prob
+    - archetype_similarity_delta
+    - comp_pca_0
+    - comp_pca_1
+    - comp_pca_2
+    - comp_pca_3
+    - comp_pca_4
+    - comp_pca_5
+    - comp_pca_6
+    - comp_pca_7
+    - player_mastery_delta
+    - recent_form_last3
+    - series_game_number
+
+# -----------------------------------------------------------------------------
+# Backtest Settings
+# -----------------------------------------------------------------------------
+backtest:
+  # Minimum edge (|model_prob - market_prob|) to place a simulated bet
+  edge_threshold: 0.05
+  # Starting bankroll for simulation
+  starting_bankroll: 1000.0
+  # Bet sizing as fraction of bankroll (flat betting)
+  bet_fraction: 0.02
+  # Kelly criterion fraction (alternative to flat betting)
+  kelly_fraction: 0.25
+  # Betting strategy: "flat" or "kelly"
+  bet_strategy: "kelly"
