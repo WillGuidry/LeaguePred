@@ -19,7 +19,7 @@ elo:
 # -----------------------------------------------------------------------------
 data:
   # Path to Oracle's Elixir CSV exports
-  oracle_csv_dir: "/Users/willguidry/Documents/LeaguePred"
+  oracle_csv_dir: "data/raw"
   # Processed output directory
   processed_dir: "data/processed"
   # Columns expected from Oracle's Elixir game-level data
