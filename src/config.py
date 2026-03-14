@@ -87,53 +87,90 @@ ELO_SCALE_FACTOR = 400
 # but they matter a lot early on when we have few games per team.
 
 REGIONAL_ELO_PRIORS = {
-    # Major regions (Lolesports scores)
+    # === TIER 1: Major regions (Lolesports strength scores) ===
     "LCK": 1586,
     "LPL": 1353,
     "LEC": 1169,
-    "LCP": 1156,
+    "LCP": 1156,       # Pacific (replaced PCS in 2025)
     "LCS": 1094,
-    "CBLOL": 842,
+    "PCS": 1100,       # Pacific Championship (pre-2025)
 
-    # Secondary regions (estimated relative to majors)
-    "VCS": 1000,
-    "LJL": 950,
-    "TCL": 950,
-    "PCS": 1050,       # Absorbed into LCP but may appear in older data
-    "LLA": 850,
+    # === International events ===
+    "MSI": 1300,
+    "WLDs": 1300,      # Worlds
+    "EWC": 1200,       # Esports World Cup
+    "Asia Master": 1300,
+    "ASI": 1200,
+    "IC": 1200,
+    "DCup": 1100,      # Demacia Cup (China)
+    "KeSPA": 1100,     # Korean esports cup
 
-    # European regional leagues (below LEC, above minor)
-    "LFL": 1000,       # French league, strongest ERL
-    "PRM": 950,        # German league
+    # === TIER 2: Strong secondary regions ===
+    "LDL": 1200,       # LPL Development — very strong
+    "LCKC": 1200,      # LCK Challengers
+    "VCS": 1000,       # Vietnam
+    "CBLOL": 842,      # Brazil
+    "TCL": 950,        # Turkey
+    "LJL": 950,        # Japan
+    "LLA": 850,        # Latin America (pre-LTA)
+    "LTA": 900,        # League of the Americas (2025+)
+    "LTA N": 950,      # LTA North
+    "LTA S": 850,      # LTA South
+    "LCO": 900,        # Oceania
+    "LCL": 900,        # CIS/Russia
+
+    # === TIER 2.5: European Regional Leagues ===
+    "LFL": 1000,       # France — strongest ERL
+    "LVP SL": 970,     # Spain SuperLiga
+    "PRM": 950,        # Germany
     "NLC": 930,        # Nordic
-    "HLL": 920,        # Hitpoint league
+    "UKLC": 920,       # UK
+    "UL": 920,         # Ultraliga (Poland)
+    "HLL": 920,        # Hitpoint (Czech/Slovak)
     "EBL": 910,        # Balkans
     "LIT": 900,        # Italy
-    "ROL": 900,        # Romania  -- guessing here but we can look later
-    "AL": 900,         # Austria
+    "ROL": 900,        # Romania
+    "AL": 900,         # Austria/Swiss
     "RL": 900,         # Iberian
-    "LES": 890,        # Spain
-    "EM": 1050,        # EU Masters (mix of ERL top teams)
+    "LES": 890,        # Spain secondary
+    "HW": 900,         # Hellenic (Greece)
+    "GL": 880,         # Greek League
+    "GLL": 880,        # GLL
+    "BL": 880,         # Baltic
+    "EL": 880,         # Elite League
+    "EM": 1050,        # EU Masters
+    "EUM": 1050,       # EU Masters (alt code)
+    "NLC Aurora Open": 900,
 
-    # Americas secondary
-    "Americas Cup": 950,
-    "CD": 850,
-
-    # Academy / development
-    "LCKC": 1200,      # LCK Challengers — feeder to LCK
+    # === TIER 3: Development / Academy ===
     "LPLOL": 1050,     # LPL development
+    "NACL": 900,       # NA Challengers
+    "LCSA": 850,       # LCS Academy (pre-NACL)
+    "CBLOLA": 750,     # CBLOL Academy
+    "LFL2": 880,       # LFL Division 2
+    "LJLA": 850,       # LJL Academy
+    "PRMP": 850,       # Prime League Promotion
     "LRN": 850,        # LCS amateur north
     "LRS": 850,        # LCS amateur south
-    "HW": 900,         # Hellenic league -- guessing, we can research
+    "EBLPA": 810,      # EBL Promotion
+    "GLLPA": 810,      # GLL Promotion
+    "Americas Cup": 950,
 
-    # Catch-all events
-    "CCWS": 900,       # Community/wildcard events -- guessing
+    # === TIER 3.5: Smaller / amateur leagues ===
+    "CD": 850, "DDH": 850, "LMF": 850, "PGN": 850, "ESLOL": 850,
+    "LHE": 850, "HC": 850, "HM": 850, "UPL": 850, "NEXO": 850,
+    "LAS": 850, "PCL": 850, "PGC": 850, "RCL": 850, "DL": 850,
+    "CU": 850, "EPL": 850, "BIG": 850, "CDF": 850, "ASCI": 850,
+    "AOL": 850, "VL": 850, "BM": 850, "GSG": 850, "EGL": 850,
+    "TAL": 850, "USP": 850, "HS": 850, "OTBLX": 850, "UGP": 850,
+    "NERD": 800, "NASG": 800, "SL (LATAM)": 850, "SL": 850,
+    "CCWS": 900, "FST": 900, "CT": 850,
 }
 
 # Fallback for leagues not listed above
-REGIONAL_ELO_DEFAULT = 950
+REGIONAL_ELO_DEFAULT = 900
 
-INTERNATIONAL_EVENTS = ["MSI", "Worlds"]
+INTERNATIONAL_EVENTS = ["MSI", "WLDs", "EWC", "Asia Master"]
 
 # =============================================================================
 # ROSTER CHANGE SETTINGS

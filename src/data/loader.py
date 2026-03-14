@@ -42,7 +42,11 @@ POST_MATCH_COLS = [
 ]
 
 
-def load_oracle_csv(filepath: str, min_date: Optional[str] = None) -> pd.DataFrame:
+def load_oracle_csv(
+    filepath: str,
+    min_date: Optional[str] = None,
+    leagues: Optional[list] = None,
+) -> pd.DataFrame:
     """
     Load an Oracle's Elixir CSV and collapse to game-level rows.
 
@@ -53,6 +57,8 @@ def load_oracle_csv(filepath: str, min_date: Optional[str] = None) -> pd.DataFra
     Args:
         filepath: Path to the CSV file.
         min_date: Optional minimum date filter (YYYY-MM-DD).
+        leagues: Optional list of league codes to include (e.g., ["LCK", "LPL"]).
+                 If None, all leagues are included.
 
     Returns:
         DataFrame with one row per game, columns for both teams.
@@ -67,13 +73,19 @@ def load_oracle_csv(filepath: str, min_date: Optional[str] = None) -> pd.DataFra
     # Normalize column names
     df.columns = df.columns.str.strip().str.lower()
 
+    # Filter by league early (before expensive groupby operations)
+    if leagues and "league" in df.columns:
+        before = df["gameid"].nunique()
+        df = df[df["league"].isin(leagues)]
+        after = df["gameid"].nunique()
+        print(f"League filter: {after} games from {leagues} (dropped {before - after})")
+
     # Auto-detect format
     if "position" in df.columns:
         return _parse_oracle_format(df, min_date)
     elif "team_a" in df.columns and "team_b" in df.columns:
         return _parse_generic_format(df, min_date)
     else:
-        # Try to be flexible — look for common column patterns
         return _parse_flexible_format(df, min_date)
 
 

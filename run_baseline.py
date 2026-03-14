@@ -66,14 +66,27 @@ def main():
         "--no-regional", action="store_true",
         help="Disable regional Elo priors (use flat 1500)"
     )
+    parser.add_argument(
+        "--leagues", nargs="+", default=None,
+        help="Only include these leagues (e.g., --leagues LCK LPL LEC LCS CBLOL LCP)"
+    )
+    parser.add_argument(
+        "--major-only", action="store_true",
+        help="Shortcut: only major leagues (LCK LPL LEC LCP LCS CBLOL MSI WLDs PCS)"
+    )
 
     args = parser.parse_args()
+
+    # Resolve league filter
+    leagues = args.leagues
+    if args.major_only:
+        leagues = ["LCK", "LPL", "LEC", "LCP", "LCS", "CBLOL", "MSI", "WLDs", "PCS"]
 
     # Step 1: Load data
     print("\n" + "=" * 60)
     print("STEP 1: Loading Data")
     print("=" * 60)
-    df = load_oracle_csv(args.data, min_date=args.min_date)
+    df = load_oracle_csv(args.data, min_date=args.min_date, leagues=leagues)
 
     # Step 2: Validate
     print("\n" + "=" * 60)
