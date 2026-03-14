@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual Environment
+venv/
+env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+
+# Data files (large CSVs shouldn't live in git)
+data/raw/*.csv
+data/raw/*.json
+data/processed/*.csv
+data/features/*.csv
+data/models/*.pkl
+data/models/*.joblib
+
+# Keep the directory structure
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/features/.gitkeep
+!data/models/.gitkeep
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment variables / secrets
+.env
+*.env
+
+# Logs
+*.log
