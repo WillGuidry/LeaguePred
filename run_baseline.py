@@ -24,6 +24,7 @@ from src.elo.pipeline import (
     evaluate_elo,
     walk_forward_evaluate_elo,
     grid_search_elo,
+    compare_regional_vs_flat,
 )
 
 
@@ -57,6 +58,14 @@ def main():
         "--grid-search", action="store_true",
         help="Run grid search over Elo hyperparameters"
     )
+    parser.add_argument(
+        "--compare", action="store_true",
+        help="Compare flat Elo vs regional priors vs regional+roster"
+    )
+    parser.add_argument(
+        "--no-regional", action="store_true",
+        help="Disable regional Elo priors (use flat 1500)"
+    )
 
     args = parser.parse_args()
 
@@ -77,12 +86,24 @@ def main():
         print("Fatal errors in data. Fix before proceeding.")
         sys.exit(1)
 
+    use_regional = not args.no_regional
+
     # Step 3: Run evaluation
-    if args.grid_search:
+    if args.compare:
+        print("\n" + "=" * 60)
+        print("STEP 3: Ablation — Regional Priors vs Flat Elo")
+        print("=" * 60)
+        compare_regional_vs_flat(
+            df,
+            k_factor=args.k_factor,
+            test_fraction=args.test_fraction,
+        )
+
+    elif args.grid_search:
         print("\n" + "=" * 60)
         print("STEP 3: Grid Search")
         print("=" * 60)
-        grid_search_elo(df, test_fraction=args.test_fraction)
+        grid_search_elo(df, test_fraction=args.test_fraction, use_regional_priors=use_regional)
 
     elif args.walk_forward:
         print("\n" + "=" * 60)
@@ -92,6 +113,7 @@ def main():
             df,
             n_splits=args.n_splits,
             k_factor=args.k_factor,
+            use_regional_priors=use_regional,
         )
 
     else:
@@ -102,6 +124,7 @@ def main():
             df,
             test_fraction=args.test_fraction,
             k_factor=args.k_factor,
+            use_regional_priors=use_regional,
         )
 
 

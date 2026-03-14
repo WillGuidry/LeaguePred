@@ -72,23 +72,78 @@ CHAMPION_TEAM_WEIGHT = 0.6
 ELO_SCALE_FACTOR = 400
 
 # =============================================================================
-# DATA SETTINGS
+# REGIONAL STRENGTH PRIORS
 # =============================================================================
+# Source: Lolesports regional strength model
+# Teams in each league start at this Elo instead of the flat default.
+# This prevents the system from treating a CBLOL team as equal to an LCK team.
+#
+# For leagues not listed here, we estimate based on tier:
+#   Tier 1 (major regions): LCK, LPL, LEC, LCS — use Lolesports scores
+#   Tier 2 (secondary): regional leagues with international exposure
+#   Tier 3 (minor): development leagues, academy
+#
+# These priors get washed out over time as the Elo system sees results,
+# but they matter a lot early on when we have few games per team.
 
-# Supported regions/leagues
-REGIONS = [
-    "LCK",    # Korea
-    "LPL",    # China
-    "LEC",    # Europe
-    "LCS",    # North America
-    "PCS",    # Pacific
-    "VCS",    # Vietnam
-    "LLA",    # Latin America
-    "CBLOL",  # Brazil
-    "LJL",    # Japan
-]
+REGIONAL_ELO_PRIORS = {
+    # Major regions (Lolesports scores)
+    "LCK": 1586,
+    "LPL": 1353,
+    "LEC": 1169,
+    "LCP": 1156,
+    "LCS": 1094,
+    "CBLOL": 842,
+
+    # Secondary regions (estimated relative to majors)
+    "VCS": 1000,
+    "LJL": 950,
+    "TCL": 950,
+    "PCS": 1050,       # Absorbed into LCP but may appear in older data
+    "LLA": 850,
+
+    # European regional leagues (below LEC, above minor)
+    "LFL": 1000,       # French league, strongest ERL
+    "PRM": 950,        # German league
+    "NLC": 930,        # Nordic
+    "HLL": 920,        # Hitpoint league
+    "EBL": 910,        # Balkans
+    "LIT": 900,        # Italy
+    "ROL": 900,        # Romania  -- guessing here but we can look later
+    "AL": 900,         # Austria
+    "RL": 900,         # Iberian
+    "LES": 890,        # Spain
+    "EM": 1050,        # EU Masters (mix of ERL top teams)
+
+    # Americas secondary
+    "Americas Cup": 950,
+    "CD": 850,
+
+    # Academy / development
+    "LCKC": 1200,      # LCK Challengers — feeder to LCK
+    "LPLOL": 1050,     # LPL development
+    "LRN": 850,        # LCS amateur north
+    "LRS": 850,        # LCS amateur south
+    "HW": 900,         # Hellenic league -- guessing, we can research
+
+    # Catch-all events
+    "CCWS": 900,       # Community/wildcard events -- guessing
+}
+
+# Fallback for leagues not listed above
+REGIONAL_ELO_DEFAULT = 950
 
 INTERNATIONAL_EVENTS = ["MSI", "Worlds"]
+
+# =============================================================================
+# ROSTER CHANGE SETTINGS
+# =============================================================================
+# How many players must change for it to count as a roster change
+# LoL teams have 5 players. Swapping 1 sub is minor, 3+ is major.
+ROSTER_CHANGE_MINOR_THRESHOLD = 1   # 1 player changed
+ROSTER_CHANGE_MAJOR_THRESHOLD = 3   # 3+ players changed
+ROSTER_MINOR_REGRESSION = 0.15      # Regress 15% toward regional mean
+ROSTER_MAJOR_REGRESSION = 0.40      # Regress 40% toward regional mean
 
 # =============================================================================
 # MODULE ACTIVATION

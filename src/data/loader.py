@@ -80,7 +80,14 @@ def load_oracle_csv(filepath: str, min_date: Optional[str] = None) -> pd.DataFra
 def _parse_oracle_format(df: pd.DataFrame, min_date: Optional[str]) -> pd.DataFrame:
     """Parse Oracle's Elixir format (12 rows per game)."""
 
-    # Keep only team summary rows
+    # Parse date on full dataframe before splitting
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        if min_date:
+            df = df[df["date"] >= pd.to_datetime(min_date)]
+
+    # Separate player rows and team rows
+    player_rows = df[df["position"].isin(["top", "jng", "mid", "bot", "sup"])].copy()
     team_rows = df[df["position"] == "team"].copy()
 
     if team_rows.empty:
@@ -88,16 +95,11 @@ def _parse_oracle_format(df: pd.DataFrame, min_date: Optional[str]) -> pd.DataFr
             "No team-level rows found. Check that 'position' column contains 'team' entries."
         )
 
-    # Parse date
-    if "date" in team_rows.columns:
-        team_rows["date"] = pd.to_datetime(team_rows["date"], errors="coerce")
-        if min_date:
-            team_rows = team_rows[team_rows["date"] >= pd.to_datetime(min_date)]
-
-    # Each game has a unique gameid with two team rows
-    # Split into blue side (first row) and red side (second row)
     if "gameid" not in team_rows.columns:
         raise ValueError("No 'gameid' column found. Cannot group rows into games.")
+
+    # Build roster lookup: {gameid: {teamname: [player1, player2, ...]}}
+    roster_lookup = _build_roster_lookup(player_rows)
 
     games = []
     for game_id, group in team_rows.groupby("gameid"):
@@ -108,6 +110,13 @@ def _parse_oracle_format(df: pd.DataFrame, min_date: Optional[str]) -> pd.DataFr
         row_b = group.iloc[1]
 
         game = _build_game_row(row_a, row_b, game_id)
+
+        # Attach roster info
+        rosters = roster_lookup.get(game_id, {})
+        team_col = "teamname" if "teamname" in row_a.index else "team"
+        game["roster_a"] = rosters.get(row_a.get(team_col), [])
+        game["roster_b"] = rosters.get(row_b.get(team_col), [])
+
         games.append(game)
 
     result = pd.DataFrame(games)
@@ -118,6 +127,29 @@ def _parse_oracle_format(df: pd.DataFrame, min_date: Optional[str]) -> pd.DataFr
 
     print(f"Loaded {len(result)} games from {filepath_summary(result)}")
     return result
+
+
+def _build_roster_lookup(player_rows: pd.DataFrame) -> dict:
+    """
+    Build a lookup of rosters per game.
+
+    Returns:
+        {gameid: {teamname: sorted list of playernames}}
+    """
+    if player_rows.empty:
+        return {}
+
+    team_col = "teamname" if "teamname" in player_rows.columns else "team"
+    player_col = "playername" if "playername" in player_rows.columns else "playerid"
+
+    lookup = {}
+    for game_id, game_group in player_rows.groupby("gameid"):
+        lookup[game_id] = {}
+        for team, team_group in game_group.groupby(team_col):
+            players = sorted(team_group[player_col].dropna().unique().tolist())
+            lookup[game_id][team] = players
+
+    return lookup
 
 
 def _build_game_row(row_a: pd.Series, row_b: pd.Series, game_id: str) -> dict:
