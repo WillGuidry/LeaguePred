@@ -1,0 +1,109 @@
+"""
+Run Baseline Evaluation
+------------------------
+Entry point for running the Elo baseline on your data.
+
+Usage:
+    python run_baseline.py --data data/raw/your_matches.csv
+    python run_baseline.py --data data/raw/your_matches.csv --grid-search
+    python run_baseline.py --data data/raw/your_matches.csv --walk-forward
+
+This script:
+    1. Loads your match data (Oracle's Elixir or generic CSV)
+    2. Validates the data quality
+    3. Runs the Elo engine chronologically
+    4. Evaluates predictions on held-out future data
+    5. Reports log loss, Brier score, calibration, and accuracy
+"""
+
+import argparse
+import sys
+
+from src.data.loader import load_oracle_csv, validate_data, print_validation_report
+from src.elo.pipeline import (
+    evaluate_elo,
+    walk_forward_evaluate_elo,
+    grid_search_elo,
+)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="LeaguePred — Elo Baseline Evaluation")
+    parser.add_argument(
+        "--data", required=True,
+        help="Path to match data CSV (Oracle's Elixir format or generic)"
+    )
+    parser.add_argument(
+        "--min-date", default=None,
+        help="Only include matches after this date (YYYY-MM-DD)"
+    )
+    parser.add_argument(
+        "--test-fraction", type=float, default=0.2,
+        help="Fraction of data to use for testing (default: 0.2)"
+    )
+    parser.add_argument(
+        "--k-factor", type=float, default=32.0,
+        help="Elo K-factor (default: 32)"
+    )
+    parser.add_argument(
+        "--walk-forward", action="store_true",
+        help="Use walk-forward validation instead of simple split"
+    )
+    parser.add_argument(
+        "--n-splits", type=int, default=5,
+        help="Number of walk-forward splits (default: 5)"
+    )
+    parser.add_argument(
+        "--grid-search", action="store_true",
+        help="Run grid search over Elo hyperparameters"
+    )
+
+    args = parser.parse_args()
+
+    # Step 1: Load data
+    print("\n" + "=" * 60)
+    print("STEP 1: Loading Data")
+    print("=" * 60)
+    df = load_oracle_csv(args.data, min_date=args.min_date)
+
+    # Step 2: Validate
+    print("\n" + "=" * 60)
+    print("STEP 2: Validating Data")
+    print("=" * 60)
+    report = validate_data(df)
+    print_validation_report(report)
+
+    if report.get("errors"):
+        print("Fatal errors in data. Fix before proceeding.")
+        sys.exit(1)
+
+    # Step 3: Run evaluation
+    if args.grid_search:
+        print("\n" + "=" * 60)
+        print("STEP 3: Grid Search")
+        print("=" * 60)
+        grid_search_elo(df, test_fraction=args.test_fraction)
+
+    elif args.walk_forward:
+        print("\n" + "=" * 60)
+        print("STEP 3: Walk-Forward Evaluation")
+        print("=" * 60)
+        walk_forward_evaluate_elo(
+            df,
+            n_splits=args.n_splits,
+            k_factor=args.k_factor,
+        )
+
+    else:
+        print("\n" + "=" * 60)
+        print("STEP 3: Elo Baseline Evaluation")
+        print("=" * 60)
+        evaluate_elo(
+            df,
+            test_fraction=args.test_fraction,
+            k_factor=args.k_factor,
+        )
+
+
+if __name__ == "__main__":
+    main()
