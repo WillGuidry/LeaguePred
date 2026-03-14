@@ -226,7 +226,7 @@ def _print_report(report: dict) -> None:
             print(
                 f"{row['predicted_prob']:>11.1%} "
                 f"{row['actual_win_rate']:>11.1%} "
-                f"{row['count']:>8d} "
+                f"{int(row['count']):>8d} "
                 f"{dev:>+11.1%}{flag}"
             )
     print()
