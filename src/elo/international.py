@@ -31,6 +31,7 @@ import pandas as pd
 from typing import Optional
 
 from src.elo.engine import EloEngine
+from datetime import timedelta
 from src.config import (
     REGIONAL_ELO_PRIORS, REGIONAL_ELO_DEFAULT,
     INTL_DECAY_BETWEEN_EVENTS, INTL_GAMES_FULL_TRUST, INTL_MAX_WEIGHT,
@@ -69,26 +70,39 @@ class PersistentInternationalElo:
         decay_factor: float = INTL_DECAY_BETWEEN_EVENTS,
         games_full_trust: int = INTL_GAMES_FULL_TRUST,
         max_weight: float = INTL_MAX_WEIGHT,
+        max_age_days: int = 730,  # 2 years
     ):
         self.decay_factor = decay_factor
         self.games_full_trust = games_full_trust
         self.max_weight = max_weight
+        self.max_age_days = max_age_days
 
         # Career international Elo per team
         self.ratings: dict = {}  # {team: elo}
-        # Career international game count per team
-        self.game_counts: dict = {}  # {team: count}
+        # Timestamped game records: {team: [(date, game_count_in_event)]}
+        self._game_history: dict = {}  # {team: [(pd.Timestamp, int)]}
         # Each team's regional prior (cached for decay target)
         self._regional_priors: dict = {}  # {team: prior_elo}
+        # Current reference date (updated as tournaments are absorbed)
+        self._current_date: pd.Timestamp = None
+
+    def _recent_game_count(self, team: str) -> int:
+        """Count international games within the max_age_days window."""
+        history = self._game_history.get(team, [])
+        if not history or self._current_date is None:
+            return 0
+        cutoff = self._current_date - timedelta(days=self.max_age_days)
+        return sum(count for date, count in history if date >= cutoff)
 
     def get_intl_weight(self, team: str) -> float:
         """
         How much to trust a team's international Elo vs regional prior.
 
-        Returns 0.0 for teams with no international games,
+        Only counts games from the last max_age_days (default 2 years).
+        Returns 0.0 for teams with no recent international games,
         ramps linearly to max_weight at games_full_trust games.
         """
-        games = self.game_counts.get(team, 0)
+        games = self._recent_game_count(team)
         if games == 0:
             return 0.0
         raw = min(games / self.games_full_trust, 1.0)
@@ -115,30 +129,39 @@ class PersistentInternationalElo:
         blended_base = (1 - w) * regional_prior + w * intl_base
         return blended_base + domestic_deviation
 
-    def absorb_tournament(self, predictor: "TournamentPredictor") -> None:
+    def absorb_tournament(self, predictor: "TournamentPredictor", tournament_date: pd.Timestamp = None) -> None:
         """
         After a tournament ends, absorb each team's final tournament Elo
-        into the persistent store.
+        into the persistent store. Games older than max_age_days will be
+        excluded from trust weight calculations.
         """
+        if tournament_date is not None:
+            self._current_date = tournament_date
+
         for team, tourn_elo in predictor.tournament_engine.ratings.items():
             games_this_event = predictor.games_played.get(team, 0)
             if games_this_event == 0:
                 continue
 
-            prev_games = self.game_counts.get(team, 0)
-            total_games = prev_games + games_this_event
+            # Record timestamped game history
+            if team not in self._game_history:
+                self._game_history[team] = []
+            if self._current_date is not None:
+                self._game_history[team].append((self._current_date, games_this_event))
 
-            if team in self.ratings:
-                # Weighted average: more weight to whichever has more games
-                prev_weight = prev_games / total_games
-                new_weight = games_this_event / total_games
+            # Use only recent games for weighting the Elo merge
+            recent_prev = self._recent_game_count(team) - games_this_event
+            recent_total = recent_prev + games_this_event
+
+            if team in self.ratings and recent_prev > 0:
+                prev_weight = recent_prev / recent_total
+                new_weight = games_this_event / recent_total
                 self.ratings[team] = (
                     prev_weight * self.ratings[team] + new_weight * tourn_elo
                 )
             else:
+                # No recent history or first event — use tournament Elo directly
                 self.ratings[team] = tourn_elo
-
-            self.game_counts[team] = total_games
 
             # Cache regional prior for decay
             league = predictor.team_leagues.get(team)
@@ -162,10 +185,13 @@ class PersistentInternationalElo:
 
     def get_team_info(self, team: str) -> dict:
         """Debug info for a team's persistent international state."""
+        total_games = sum(c for _, c in self._game_history.get(team, []))
+        recent_games = self._recent_game_count(team)
         return {
             "team": team,
             "intl_elo": round(self.ratings.get(team, 0), 1),
-            "intl_games": self.game_counts.get(team, 0),
+            "intl_games": recent_games,
+            "intl_games_total": total_games,
             "intl_weight": round(self.get_intl_weight(team), 2),
             "regional_prior": round(self._regional_priors.get(team, 0), 1),
         }
@@ -570,7 +596,8 @@ def backtest_international(
             predictor.update(team_a, team_b, winner)
 
         # Absorb this tournament's results into persistent international Elo
-        persistent_intl.absorb_tournament(predictor)
+        tournament_date = t_df["date"].max()
+        persistent_intl.absorb_tournament(predictor, tournament_date=tournament_date)
         persistent_intl.decay()
 
     # Final comparison

@@ -121,8 +121,13 @@ def build_engine(
                 if pd.notna(winner):
                     predictor.update(row["team_a"], row["team_b"], winner)
 
-            persistent_intl.absorb_tournament(predictor)
+            tournament_date = t_df["date"].max()
+            persistent_intl.absorb_tournament(predictor, tournament_date=tournament_date)
             persistent_intl.decay()
+
+    # Set current date for recency calculations on future predictions
+    if persistent_intl._current_date is None:
+        persistent_intl._current_date = pd.Timestamp.now()
 
     return domestic_engine, team_leagues, persistent_intl
 
