@@ -29,7 +29,14 @@ from src.config import (
     ROSTER_CHANGE_MAJOR_THRESHOLD,
     ROSTER_MINOR_REGRESSION,
     ROSTER_MAJOR_REGRESSION,
+    ACTIVE_MODULES,
+    LEAD_STATE_WINDOW,
+    LEAD_STATE_MIN_GAMES,
+    LEAD_STATE_SHRINKAGE_WEIGHT,
 )
+from src.modules.margin_of_victory import extract_mov_from_row
+from src.modules.team_state_tracker import TeamStateTracker
+from src.modules.lead_state import LeadStateModule
 
 
 def _get_regional_elo(league: str) -> float:
@@ -77,6 +84,8 @@ def run_elo_pipeline(
     regression_col: Optional[str] = "split",
     use_regional_priors: bool = True,
     detect_roster_changes: bool = True,
+    use_mov: Optional[bool] = None,
+    use_lead_state: Optional[bool] = None,
 ) -> pd.DataFrame:
     """
     Run the Elo engine over a chronological sequence of matches.
@@ -99,6 +108,8 @@ def run_elo_pipeline(
         regression_col: Column to detect split boundaries (None to disable).
         use_regional_priors: Use league-specific starting Elo.
         detect_roster_changes: Auto-detect and handle roster changes.
+        use_mov: Enable MOV multiplier. None = use ACTIVE_MODULES config.
+        use_lead_state: Enable Lead State features. None = use ACTIVE_MODULES config.
 
     Returns:
         DataFrame with original data plus prediction columns.
@@ -110,6 +121,21 @@ def run_elo_pipeline(
         k_factor=k_factor,
         scale_factor=scale_factor,
     )
+
+    # Determine which modules are active
+    mov_active = use_mov if use_mov is not None else ACTIVE_MODULES.get("margin_of_victory", False)
+    lead_state_active = use_lead_state if use_lead_state is not None else ACTIVE_MODULES.get("lead_state", False)
+
+    # Initialize Lead State tracker and module
+    tracker = None
+    lead_state_module = None
+    if lead_state_active:
+        tracker = TeamStateTracker(
+            window=LEAD_STATE_WINDOW,
+            min_games=LEAD_STATE_MIN_GAMES,
+            shrinkage_weight=LEAD_STATE_SHRINKAGE_WEIGHT,
+        )
+        lead_state_module = LeadStateModule(tracker)
 
     predictions = []
     last_split = None
@@ -177,6 +203,17 @@ def run_elo_pipeline(
         # --- PREDICT FIRST (before seeing the result) ---
         pred = engine.predict(team_a, team_b)
 
+        # Lead State features (pre-match, from prior games only)
+        lead_edge = 0.0
+        lead_confidence = 0.0
+        lead_feats_a = {}
+        lead_feats_b = {}
+        if lead_state_active and lead_state_module:
+            lead_edge = lead_state_module.compute(team_a, team_b)
+            lead_confidence = lead_state_module.confidence()
+            lead_feats_a = lead_state_module._last_features_a
+            lead_feats_b = lead_state_module._last_features_b
+
         # Actual outcome (1 if team_a won, 0 if team_b won)
         if winner == team_a:
             actual_a = 1
@@ -185,7 +222,12 @@ def run_elo_pipeline(
         else:
             actual_a = np.nan
 
-        predictions.append({
+        # Compute MOV multiplier (post-match, from this game's stats)
+        mov_multiplier = 1.0
+        if mov_active and pd.notna(actual_a):
+            mov_multiplier = extract_mov_from_row(row, winner)
+
+        pred_row = {
             "elo_a": pred["elo_a"],
             "elo_b": pred["elo_b"],
             "elo_diff": pred["elo_diff"],
@@ -195,11 +237,29 @@ def run_elo_pipeline(
             "actual_outcome_a": actual_a,
             "roster_changes_a": roster_changes_a,
             "roster_changes_b": roster_changes_b,
-        })
+            "mov_multiplier": mov_multiplier,
+        }
+
+        # Add lead state features to output
+        if lead_state_active:
+            pred_row["lead_edge"] = lead_edge
+            pred_row["lead_confidence"] = lead_confidence
+            for feat in ["avg_gd15", "avg_gd20", "first_dragon_rate",
+                         "first_herald_rate", "first_tower_rate", "first_blood_rate",
+                         "win_rate_when_ahead_2k_15", "win_rate_when_ahead_3k_20",
+                         "win_rate_when_behind_2k_15", "avg_game_length_when_ahead"]:
+                pred_row[f"ls_{feat}_a"] = lead_feats_a.get(feat, np.nan)
+                pred_row[f"ls_{feat}_b"] = lead_feats_b.get(feat, np.nan)
+
+        predictions.append(pred_row)
 
         # --- NOW update ratings with the result ---
         if pd.notna(actual_a):
-            engine.process_match(team_a, team_b, winner)
+            engine.process_match(team_a, team_b, winner, margin_multiplier=mov_multiplier)
+
+            # Update Lead State tracker with this game's post-match stats
+            if lead_state_active and tracker:
+                _record_team_stats(tracker, row, team_a, team_b, winner)
 
     pred_df = pd.DataFrame(predictions)
     result = pd.concat([df.reset_index(drop=True), pred_df], axis=1)
@@ -240,6 +300,69 @@ def _regress_team_to_regional(
     engine.ratings[team] = current + fraction * (regional_mean - current)
 
 
+def _record_team_stats(
+    tracker: TeamStateTracker,
+    row,
+    team_a: str,
+    team_b: str,
+    winner: str,
+) -> None:
+    """
+    Extract post-match stats from a game row and record them in the tracker.
+
+    Called in the UPDATE phase after the match result is known.
+    Records stats for both teams with appropriate perspective (gold diff
+    is positive for the team that's ahead, negative for the one behind).
+    """
+    def _safe(key, default=0.0):
+        val = row.get(key) if hasattr(row, 'get') else getattr(row, key, None) if hasattr(row, key) else None
+        if val is None:
+            return default
+        try:
+            if isinstance(val, float) and np.isnan(val):
+                return default
+        except (TypeError, ValueError):
+            pass
+        return float(val)
+
+    # Team A stats (from team_a's perspective)
+    stats_a = {
+        "result": 1 if winner == team_a else 0,
+        "golddiffat15": _safe("a_golddiffat15"),
+        "golddiffat20": _safe("a_golddiffat20"),
+        "firstdragon": _safe("a_firstdragon"),
+        "firstherald": _safe("a_firstherald"),
+        "firsttower": _safe("a_firsttower"),
+        "firstblood": _safe("a_firstblood"),
+        "dragons": _safe("a_dragons"),
+        "barons": _safe("a_barons"),
+        "towers": _safe("a_towers"),
+        "gamelength": _safe("gamelength"),
+        "totalgold": _safe("a_totalgold"),
+        "opp_totalgold": _safe("b_totalgold"),
+    }
+
+    # Team B stats (from team_b's perspective -- gold diffs inverted)
+    stats_b = {
+        "result": 1 if winner == team_b else 0,
+        "golddiffat15": -_safe("a_golddiffat15"),
+        "golddiffat20": -_safe("a_golddiffat20"),
+        "firstdragon": _safe("b_firstdragon"),
+        "firstherald": _safe("b_firstherald"),
+        "firsttower": _safe("b_firsttower"),
+        "firstblood": _safe("b_firstblood"),
+        "dragons": _safe("b_dragons"),
+        "barons": _safe("b_barons"),
+        "towers": _safe("b_towers"),
+        "gamelength": _safe("gamelength"),
+        "totalgold": _safe("b_totalgold"),
+        "opp_totalgold": _safe("a_totalgold"),
+    }
+
+    tracker.record_game(team_a, stats_a)
+    tracker.record_game(team_b, stats_b)
+
+
 def evaluate_elo(
     df: pd.DataFrame,
     test_fraction: float = 0.2,
@@ -250,6 +373,8 @@ def evaluate_elo(
     use_regional_priors: bool = True,
     detect_roster_changes: bool = True,
     model_name: str = "Elo Baseline",
+    use_mov: Optional[bool] = None,
+    use_lead_state: Optional[bool] = None,
 ) -> dict:
     """
     Run Elo on the full dataset and evaluate on the test portion.
@@ -265,6 +390,8 @@ def evaluate_elo(
         season_regression=season_regression,
         use_regional_priors=use_regional_priors,
         detect_roster_changes=detect_roster_changes,
+        use_mov=use_mov,
+        use_lead_state=use_lead_state,
     )
 
     train, test = temporal_split(results, test_fraction=test_fraction)

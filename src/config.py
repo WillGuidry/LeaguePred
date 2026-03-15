@@ -43,6 +43,39 @@ MARGIN_MULTIPLIER_MIN = 0.5
 MARGIN_MULTIPLIER_MAX = 2.0
 
 # =============================================================================
+# LEAD STATE EFFICIENCY SETTINGS
+# =============================================================================
+
+# Rolling window: how many recent games to consider per team
+LEAD_STATE_WINDOW = 20
+
+# Minimum games before producing non-prior features
+LEAD_STATE_MIN_GAMES = 5
+
+# Bayesian prior weight for state-conditional features
+# A team with this many qualifying games gets 50% shrinkage toward the prior
+LEAD_STATE_SHRINKAGE_WEIGHT = 5.0
+
+# Gold diff thresholds for defining "ahead" and "behind" states
+AHEAD_THRESHOLD_15 = 2000   # Gold diff at 15 min to count as "ahead"
+AHEAD_THRESHOLD_20 = 3000   # Gold diff at 20 min to count as "ahead"
+
+# Feature weights for edge score computation
+# These control how much each feature contributes to the style edge
+LEAD_STATE_WEIGHTS = {
+    "avg_gd15": 0.25,                     # Early gold lead tendency
+    "avg_gd20": 0.15,                     # Mid-game gold tendency
+    "first_dragon_rate": 0.10,            # Objective priority (bot-side)
+    "first_herald_rate": 0.05,            # Objective priority (top-side)
+    "first_tower_rate": 0.10,             # Map pressure conversion
+    "first_blood_rate": 0.05,             # Early aggression
+    "win_rate_when_ahead_2k_15": 0.15,    # Closeout efficiency
+    "win_rate_when_ahead_3k_20": 0.05,    # Conversion from comfort
+    "win_rate_when_behind_2k_15": 0.05,   # Comeback ability
+    "avg_game_length_when_ahead": 0.05,   # Closing speed
+}
+
+# =============================================================================
 # ROLLING PERFORMANCE SETTINGS
 # =============================================================================
 
@@ -190,6 +223,7 @@ ROSTER_MAJOR_REGRESSION = 0.40      # Regress 40% toward regional mean
 
 ACTIVE_MODULES = {
     "margin_of_victory": False,
+    "lead_state": False,
     "draft_analysis": False,
     "rolling_performance": False,
     "patch_dominance": False,
