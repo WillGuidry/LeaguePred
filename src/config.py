@@ -206,6 +206,25 @@ REGIONAL_ELO_DEFAULT = 900
 INTERNATIONAL_EVENTS = ["MSI", "WLDs", "EWC", "Asia Master"]
 
 # =============================================================================
+# PERSISTENT INTERNATIONAL ELO SETTINGS
+# =============================================================================
+# Instead of discarding international Elo between tournaments, we keep a
+# running "career international Elo" that decays between events.
+# Teams with many international games rely less on regional priors.
+
+# Between tournaments, regress international Elo toward the regional prior
+# 0.0 = no decay (full memory), 1.0 = full reset (current behavior)
+INTL_DECAY_BETWEEN_EVENTS = 0.3
+
+# How many career international games before a team's intl Elo is fully trusted
+# At this threshold, the team's prior is ~100% international Elo, ~0% regional
+INTL_GAMES_FULL_TRUST = 20
+
+# Maximum weight for international Elo when computing a team's prior
+# Even at full trust, keep some regional prior influence as a safety floor
+INTL_MAX_WEIGHT = 0.85
+
+# =============================================================================
 # ROSTER CHANGE SETTINGS
 # =============================================================================
 # How many players must change for it to count as a roster change

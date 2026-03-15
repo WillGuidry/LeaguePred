@@ -31,7 +31,170 @@ import pandas as pd
 from typing import Optional
 
 from src.elo.engine import EloEngine
-from src.config import REGIONAL_ELO_PRIORS, REGIONAL_ELO_DEFAULT
+from datetime import timedelta
+from src.config import (
+    REGIONAL_ELO_PRIORS, REGIONAL_ELO_DEFAULT,
+    INTL_DECAY_BETWEEN_EVENTS, INTL_GAMES_FULL_TRUST, INTL_MAX_WEIGHT,
+)
+
+
+class PersistentInternationalElo:
+    """
+    Maintains a career international Elo for each team across tournaments.
+
+    Problem:
+        The original TournamentPredictor discards all international Elo
+        between events. BLG's 20+ international games count for nothing
+        when predicting the next tournament. A team like FEARX with zero
+        international games gets the same treatment.
+
+    Solution:
+        Track a running international Elo and career game count per team.
+        Between tournaments, decay the international Elo toward the
+        regional prior (not a full reset). When computing a team's prior
+        for the next event, blend between regional prior and career
+        international Elo based on how many international games they've
+        played.
+
+    Usage:
+        persistent = PersistentInternationalElo()
+        # After each tournament:
+        persistent.absorb_tournament(predictor)
+        persistent.decay()
+        # Before next tournament:
+        predictor = TournamentPredictor(..., persistent_intl=persistent)
+    """
+
+    def __init__(
+        self,
+        decay_factor: float = INTL_DECAY_BETWEEN_EVENTS,
+        games_full_trust: int = INTL_GAMES_FULL_TRUST,
+        max_weight: float = INTL_MAX_WEIGHT,
+        max_age_days: int = 730,  # 2 years
+    ):
+        self.decay_factor = decay_factor
+        self.games_full_trust = games_full_trust
+        self.max_weight = max_weight
+        self.max_age_days = max_age_days
+
+        # Career international Elo per team
+        self.ratings: dict = {}  # {team: elo}
+        # Timestamped game records: {team: [(date, game_count_in_event)]}
+        self._game_history: dict = {}  # {team: [(pd.Timestamp, int)]}
+        # Each team's regional prior (cached for decay target)
+        self._regional_priors: dict = {}  # {team: prior_elo}
+        # Current reference date (updated as tournaments are absorbed)
+        self._current_date: pd.Timestamp = None
+
+    def _recent_game_count(self, team: str) -> int:
+        """Count international games within the max_age_days window."""
+        history = self._game_history.get(team, [])
+        if not history or self._current_date is None:
+            return 0
+        cutoff = self._current_date - timedelta(days=self.max_age_days)
+        return sum(count for date, count in history if date >= cutoff)
+
+    def get_intl_weight(self, team: str) -> float:
+        """
+        How much to trust a team's international Elo vs regional prior.
+
+        Only counts games from the last max_age_days (default 2 years).
+        Returns 0.0 for teams with no recent international games,
+        ramps linearly to max_weight at games_full_trust games.
+        """
+        games = self._recent_game_count(team)
+        if games == 0:
+            return 0.0
+        raw = min(games / self.games_full_trust, 1.0)
+        return raw * self.max_weight
+
+    def get_blended_prior(
+        self, team: str, regional_prior: float, domestic_deviation: float
+    ) -> float:
+        """
+        Compute a team's prior Elo blending international experience
+        with regional prior.
+
+        For a team with many international games (e.g. BLG):
+            prior ≈ international_elo + domestic_deviation (regional prior fades)
+        For a team with zero international games (e.g. FEARX):
+            prior = regional_prior + domestic_deviation (unchanged from before)
+        """
+        w = self.get_intl_weight(team)
+
+        if w == 0.0 or team not in self.ratings:
+            return regional_prior + domestic_deviation
+
+        intl_base = self.ratings[team]
+        blended_base = (1 - w) * regional_prior + w * intl_base
+        return blended_base + domestic_deviation
+
+    def absorb_tournament(self, predictor: "TournamentPredictor", tournament_date: pd.Timestamp = None) -> None:
+        """
+        After a tournament ends, absorb each team's final tournament Elo
+        into the persistent store. Games older than max_age_days will be
+        excluded from trust weight calculations.
+        """
+        if tournament_date is not None:
+            self._current_date = tournament_date
+
+        for team, tourn_elo in predictor.tournament_engine.ratings.items():
+            games_this_event = predictor.games_played.get(team, 0)
+            if games_this_event == 0:
+                continue
+
+            # Record timestamped game history
+            if team not in self._game_history:
+                self._game_history[team] = []
+            if self._current_date is not None:
+                self._game_history[team].append((self._current_date, games_this_event))
+
+            # Use only recent games for weighting the Elo merge
+            recent_prev = self._recent_game_count(team) - games_this_event
+            recent_total = recent_prev + games_this_event
+
+            if team in self.ratings and recent_prev > 0:
+                prev_weight = recent_prev / recent_total
+                new_weight = games_this_event / recent_total
+                self.ratings[team] = (
+                    prev_weight * self.ratings[team] + new_weight * tourn_elo
+                )
+            else:
+                # No recent history or first event — use tournament Elo directly
+                self.ratings[team] = tourn_elo
+
+            # Cache regional prior for decay
+            league = predictor.team_leagues.get(team)
+            if league:
+                shrunk = 1200 + predictor.prior_shrinkage * (
+                    REGIONAL_ELO_PRIORS.get(league, REGIONAL_ELO_DEFAULT) - 1200
+                )
+                self._regional_priors[team] = shrunk
+
+    def decay(self) -> None:
+        """
+        Between tournaments, regress international Elo toward the
+        regional prior. This prevents stale ratings from dominating.
+        """
+        for team in self.ratings:
+            target = self._regional_priors.get(team, 1200)
+            self.ratings[team] = (
+                self.ratings[team]
+                + self.decay_factor * (target - self.ratings[team])
+            )
+
+    def get_team_info(self, team: str) -> dict:
+        """Debug info for a team's persistent international state."""
+        total_games = sum(c for _, c in self._game_history.get(team, []))
+        recent_games = self._recent_game_count(team)
+        return {
+            "team": team,
+            "intl_elo": round(self.ratings.get(team, 0), 1),
+            "intl_games": recent_games,
+            "intl_games_total": total_games,
+            "intl_weight": round(self.get_intl_weight(team), 2),
+            "regional_prior": round(self._regional_priors.get(team, 0), 1),
+        }
 
 
 class TournamentPredictor:
@@ -54,6 +217,7 @@ class TournamentPredictor:
         blend_games: int = 8,
         max_tournament_weight: float = 0.6,
         prior_shrinkage: float = 0.6,
+        persistent_intl: PersistentInternationalElo = None,
     ):
         """
         Args:
@@ -72,6 +236,10 @@ class TournamentPredictor:
                              0.6 = use 60% of the gap (calibrated via backtest on
                              1,036 international games to minimize log loss while
                              keeping calibration error under 0.06).
+            persistent_intl: Persistent international Elo store. When provided,
+                             teams with international experience will use their
+                             career international Elo instead of the regional
+                             prior, with weight proportional to games played.
         """
         self.domestic_engine = domestic_engine
         self.team_leagues = team_leagues
@@ -80,6 +248,7 @@ class TournamentPredictor:
         self.blend_games = blend_games
         self.max_tournament_weight = max_tournament_weight
         self.prior_shrinkage = prior_shrinkage
+        self.persistent_intl = persistent_intl
 
         # Tournament-specific Elo engine (starts fresh)
         self.tournament_engine = EloEngine(
@@ -106,7 +275,12 @@ class TournamentPredictor:
             2. Get regional strength from Lolesports scores
             3. Shrink the regional gap toward the global mean
                (because raw Lolesports gaps produce overconfident predictions)
-            4. Prior = shrunk regional center + within-league deviation
+            4. If a persistent international Elo exists for this team, blend
+               between the regional prior and their career international Elo
+               based on how many international games they've played.
+               Teams with 20+ intl games mostly use their proven intl Elo.
+               Teams with 0 intl games use pure regional prior (unchanged).
+            5. Prior = blended base + within-league deviation
 
         The shrinkage reflects that international play has more variance
         than regional strength scores imply. Mid-tier regions upset
@@ -126,10 +300,16 @@ class TournamentPredictor:
             domestic_elo = self.domestic_engine.ratings[team]
             league_avg = self._league_avg(league)
             deviation = domestic_elo - league_avg
-            prior = shrunk_regional + deviation
         else:
-            # Unknown team — use shrunk regional strength
-            prior = shrunk_regional
+            deviation = 0.0
+
+        # Blend with persistent international Elo if available
+        if self.persistent_intl is not None:
+            prior = self.persistent_intl.get_blended_prior(
+                team, shrunk_regional, deviation
+            )
+        else:
+            prior = shrunk_regional + deviation
 
         self.prior_elo[team] = prior
         return prior
@@ -324,6 +504,9 @@ def backtest_international(
 
     print(f"Found {len(tournaments)} international tournaments")
 
+    # Persistent international Elo — carries across tournaments
+    persistent_intl = PersistentInternationalElo()
+
     # Backtest results
     all_preds_blended = []
     all_preds_prior_only = []
@@ -367,7 +550,7 @@ def backtest_international(
                         else:
                             team_leagues[team] = last_row["league"]
 
-        # Initialize tournament predictor
+        # Initialize tournament predictor with persistent international Elo
         predictor = TournamentPredictor(
             domestic_engine=domestic_engine,
             team_leagues=team_leagues,
@@ -375,6 +558,7 @@ def backtest_international(
             blend_games=blend_games,
             max_tournament_weight=max_tournament_weight,
             prior_shrinkage=prior_shrinkage,
+            persistent_intl=persistent_intl,
         )
 
         # Process each game
@@ -410,6 +594,11 @@ def backtest_international(
 
             # Update tournament Elo
             predictor.update(team_a, team_b, winner)
+
+        # Absorb this tournament's results into persistent international Elo
+        tournament_date = t_df["date"].max()
+        persistent_intl.absorb_tournament(predictor, tournament_date=tournament_date)
+        persistent_intl.decay()
 
     # Final comparison
     y_true = np.array(all_actuals)
