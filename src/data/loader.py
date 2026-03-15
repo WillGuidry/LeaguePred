@@ -35,10 +35,16 @@ POST_MATCH_COLS = [
     "winner", "gamelength", "result",
     "kills", "deaths", "assists",
     "firstblood", "firstdragon", "firstherald", "firstbaron", "firsttower",
-    "dragons", "barons", "towers", "inhibitors",
-    "goldat10", "goldat15", "xpat10", "xpat15",
-    "csat10", "csat15", "golddiffat10", "golddiffat15",
+    "dragons", "barons", "towers", "inhibitors", "heralds", "elders",
+    "goldat10", "goldat15", "goldat20", "goldat25",
+    "golddiffat10", "golddiffat15", "golddiffat20", "golddiffat25",
+    "xpat10", "xpat15", "xpat20", "xpat25",
+    "xpdiffat10", "xpdiffat15", "xpdiffat20", "xpdiffat25",
+    "csat10", "csat15",
+    "killsat15", "deathsat15", "assistsat15",
     "totalgold", "earnedgold", "minionkills", "monsterkills",
+    "elementaldrakes", "void_grubs",
+    "turretplates", "opp_turretplates", "visionscore",
 ]
 
 
@@ -199,12 +205,27 @@ def _build_game_row(row_a: pd.Series, row_b: pd.Series, game_id: str) -> dict:
     # Post-match stats for team A (prefixed)
     # These are kept for validation/analysis but flagged as post-match
     stat_cols = [
+        # Core stats
         "kills", "deaths", "assists", "dragons", "barons",
         "towers", "inhibitors", "totalgold", "earnedgold",
-        "goldat10", "goldat15", "xpat10", "xpat15",
-        "golddiffat10", "golddiffat15",
-        "firstblood", "firstdragon", "firstherald", "firstbaron", "firsttower",
         "minionkills", "monsterkills",
+        # First objectives
+        "firstblood", "firstdragon", "firstherald", "firstbaron", "firsttower",
+        # Timeline: gold
+        "goldat10", "goldat15", "goldat20", "goldat25",
+        "golddiffat10", "golddiffat15", "golddiffat20", "golddiffat25",
+        # Timeline: xp
+        "xpat10", "xpat15", "xpat20", "xpat25",
+        "xpdiffat10", "xpdiffat15", "xpdiffat20", "xpdiffat25",
+        # Timeline: kills/deaths
+        "killsat15", "deathsat15", "assistsat15",
+        # Objectives detail
+        "heralds", "elders",
+        "elementaldrakes",
+        "void_grubs",
+        # Structure / vision
+        "turretplates", "opp_turretplates",
+        "visionscore",
     ]
 
     for col in stat_cols:
