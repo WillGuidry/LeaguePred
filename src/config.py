@@ -61,18 +61,44 @@ AHEAD_THRESHOLD_15 = 2000   # Gold diff at 15 min to count as "ahead"
 AHEAD_THRESHOLD_20 = 3000   # Gold diff at 20 min to count as "ahead"
 
 # Feature weights for edge score computation
-# These control how much each feature contributes to the style edge
+# These control how much each feature contributes to the style edge.
+# Organized into 5 families — weights within each family can be tuned,
+# and full-family ablation reveals which families carry signal.
+
 LEAD_STATE_WEIGHTS = {
-    "avg_gd15": 0.25,                     # Early gold lead tendency
-    "avg_gd20": 0.15,                     # Mid-game gold tendency
-    "first_dragon_rate": 0.10,            # Objective priority (bot-side)
-    "first_herald_rate": 0.05,            # Objective priority (top-side)
-    "first_tower_rate": 0.10,             # Map pressure conversion
-    "first_blood_rate": 0.05,             # Early aggression
-    "win_rate_when_ahead_2k_15": 0.15,    # Closeout efficiency
-    "win_rate_when_ahead_3k_20": 0.05,    # Conversion from comfort
-    "win_rate_when_behind_2k_15": 0.05,   # Comeback ability
-    "avg_game_length_when_ahead": 0.05,   # Closing speed
+    # --- Family A: Lead Creation (total ~0.22) ---
+    "avg_gd10": 0.03,                     # Early lane phase gold tendency
+    "avg_gd15": 0.08,                     # Mid-early gold lead tendency
+    "first_dragon_rate": 0.03,            # Bot-side objective priority
+    "first_herald_rate": 0.02,            # Top-side objective priority
+    "first_tower_rate": 0.03,             # Map pressure conversion
+    "first_blood_rate": 0.01,             # Early aggression signal
+    "plate_diff": 0.02,                   # Laning phase tower pressure
+
+    # --- Family B: Advantage Quality (total ~0.10) ---
+    "lead_stability": 0.05,              # Lead at 15 still held at 20
+    "compound_lead_rate": 0.02,          # Multi-dimensional leads
+    "gold_volatility_when_ahead": 0.03,  # Lead chaos (lower = better)
+
+    # --- Family C: Lead Conversion (total ~0.38) ---
+    "win_rate_when_ahead_2k_15": 0.10,   # Closeout efficiency from 15
+    "win_rate_when_ahead_3k_20": 0.04,   # Closeout from comfortable lead
+    "close_time_ahead_15": 0.06,         # Closing speed from +2k@15
+    "close_time_ahead_20": 0.03,         # Closing speed from +3k@20
+    "gold_snowball_rate": 0.05,          # Lead growth from 15 to end
+    "dragon_soul_rate": 0.03,            # Dragon-to-soul conversion
+    "herald_tower_conv": 0.04,           # Herald-to-tower efficiency
+    "baron_win_rate": 0.03,              # Baron-to-win conversion
+
+    # --- Family D: Throw Tendency (total ~0.15) ---
+    "throw_rate_2k_15": 0.06,            # Lose% from +2k@15 (anti-signal)
+    "lead_evaporation_rate": 0.05,       # Lead held at 15 lost by 20
+    "baron_throw_rate": 0.04,            # Had baron + lead, still lost
+
+    # --- Family E: Comeback / Resistance (total ~0.15) ---
+    "win_rate_when_behind_2k_15": 0.06,  # Win from -2k@15 deficit
+    "gold_recovery_rate": 0.05,          # Behind@15 → ahead@20
+    "extend_time_behind": 0.04,          # Stalling ability when losing
 }
 
 # =============================================================================

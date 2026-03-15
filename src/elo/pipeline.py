@@ -295,10 +295,26 @@ def run_elo_pipeline(
         if lead_state_active:
             pred_row["lead_edge"] = lead_edge
             pred_row["lead_confidence"] = lead_confidence
-            for feat in ["avg_gd15", "avg_gd20", "first_dragon_rate",
-                         "first_herald_rate", "first_tower_rate", "first_blood_rate",
-                         "win_rate_when_ahead_2k_15", "win_rate_when_ahead_3k_20",
-                         "win_rate_when_behind_2k_15", "avg_game_length_when_ahead"]:
+            for feat in [
+                # Family A
+                "avg_gd10", "avg_gd15", "first_dragon_rate",
+                "first_herald_rate", "first_tower_rate", "first_blood_rate",
+                "plate_diff",
+                # Family B
+                "lead_stability", "compound_lead_rate",
+                "gold_volatility_when_ahead",
+                # Family C
+                "win_rate_when_ahead_2k_15", "win_rate_when_ahead_3k_20",
+                "close_time_ahead_15", "close_time_ahead_20",
+                "gold_snowball_rate", "dragon_soul_rate",
+                "herald_tower_conv", "baron_win_rate",
+                # Family D
+                "throw_rate_2k_15", "lead_evaporation_rate",
+                "baron_throw_rate",
+                # Family E
+                "win_rate_when_behind_2k_15", "gold_recovery_rate",
+                "extend_time_behind",
+            ]:
                 pred_row[f"ls_{feat}_a"] = lead_feats_a.get(feat, np.nan)
                 pred_row[f"ls_{feat}_b"] = lead_feats_b.get(feat, np.nan)
 
@@ -467,35 +483,51 @@ def _record_team_stats(
     # Team A stats (from team_a's perspective)
     stats_a = {
         "result": 1 if winner == team_a else 0,
+        "golddiffat10": _safe("a_golddiffat10"),
         "golddiffat15": _safe("a_golddiffat15"),
         "golddiffat20": _safe("a_golddiffat20"),
+        "golddiffat25": _safe("a_golddiffat25"),
         "firstdragon": _safe("a_firstdragon"),
         "firstherald": _safe("a_firstherald"),
         "firsttower": _safe("a_firsttower"),
         "firstblood": _safe("a_firstblood"),
+        "firstbaron": _safe("a_firstbaron"),
         "dragons": _safe("a_dragons"),
         "barons": _safe("a_barons"),
         "towers": _safe("a_towers"),
+        "elementaldrakes": _safe("a_elementaldrakes"),
+        "heralds": _safe("a_heralds"),
+        "elders": _safe("a_elders"),
         "gamelength": _safe("gamelength"),
         "totalgold": _safe("a_totalgold"),
         "opp_totalgold": _safe("b_totalgold"),
+        "turretplates": _safe("a_turretplates"),
+        "opp_turretplates": _safe("b_turretplates"),
     }
 
     # Team B stats (from team_b's perspective -- gold diffs inverted)
     stats_b = {
         "result": 1 if winner == team_b else 0,
+        "golddiffat10": -_safe("a_golddiffat10"),
         "golddiffat15": -_safe("a_golddiffat15"),
         "golddiffat20": -_safe("a_golddiffat20"),
+        "golddiffat25": -_safe("a_golddiffat25"),
         "firstdragon": _safe("b_firstdragon"),
         "firstherald": _safe("b_firstherald"),
         "firsttower": _safe("b_firsttower"),
         "firstblood": _safe("b_firstblood"),
+        "firstbaron": _safe("b_firstbaron"),
         "dragons": _safe("b_dragons"),
         "barons": _safe("b_barons"),
         "towers": _safe("b_towers"),
+        "elementaldrakes": _safe("b_elementaldrakes"),
+        "heralds": _safe("b_heralds"),
+        "elders": _safe("b_elders"),
         "gamelength": _safe("gamelength"),
         "totalgold": _safe("b_totalgold"),
         "opp_totalgold": _safe("a_totalgold"),
+        "turretplates": _safe("b_turretplates"),
+        "opp_turretplates": _safe("a_turretplates"),
     }
 
     tracker.record_game(team_a, stats_a)
