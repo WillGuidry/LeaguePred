@@ -193,84 +193,93 @@ ELO_SCALE_FACTOR = 400
 # but they matter a lot early on when we have few games per team.
 
 REGIONAL_ELO_PRIORS = {
-    # === TIER 1: Major regions (Lolesports strength scores) ===
-    "LCK": 1586,
-    "LPL": 1353,
-    "LEC": 1169,
-    "LCP": 1156,       # Pacific (replaced PCS in 2025)
-    "LCS": 1094,
-    "PCS": 1100,       # Pacific Championship (pre-2025)
+    # === TIER 1: Major regions ===
+    # Data-driven from 2025 international event win rates (Elo formula):
+    #   LCK 59.8% (266g), LPL 51.2% (285g), LEC 39.1% (69g), LCP 34.3% (67g)
+    # Anchored at LCK=1500, gaps = -400*log10(1/WR - 1) relative to LCK
+    "LCK": 1500,        # 59.8% intl WR, 266 games
+    "LPL": 1440,        # 51.2% intl WR, 285 games
+    "LEC": 1354,        # 39.1% intl WR, 69 games
+    "LCP": 1319,        # 34.3% intl WR, 67 games (Pacific, 2025+)
+    "LCS": 1320,        # ~LCP level (merged into LTA 2025)
+    "PCS": 1311,        # 33.3% intl WR, 39 games (Pacific, pre-2025)
 
     # === International events ===
-    "MSI": 1300,
-    "WLDs": 1300,      # Worlds
-    "EWC": 1200,       # Esports World Cup
-    "Asia Master": 1300,
-    "ASI": 1200,
-    "IC": 1200,
-    "DCup": 1100,      # Demacia Cup (China)
-    "KeSPA": 1100,     # Korean esports cup
+    # Field is pre-selected; use mid-point between top and bottom regions
+    "MSI": 1450,
+    "WLDs": 1450,       # Worlds
+    "EWC": 1400,        # Esports World Cup
+    "Asia Master": 1450,
+    "ASI": 1400,
+    "IC": 1400,
+    "DCup": 1400,       # Demacia Cup (China domestic)
+    "KeSPA": 1400,      # Korean esports cup
 
-    # === TIER 2: Strong secondary regions ===
-    "LDL": 1200,       # LPL Development — very strong
-    "LCKC": 1200,      # LCK Challengers
-    "VCS": 1000,       # Vietnam
-    "CBLOL": 842,      # Brazil
-    "TCL": 950,        # Turkey
-    "LJL": 950,        # Japan
-    "LLA": 850,        # Latin America (pre-LTA)
-    "LTA": 900,        # League of the Americas (2025+)
-    "LTA N": 950,      # LTA North
-    "LTA S": 850,      # LTA South
-    "LCO": 900,        # Oceania
-    "LCL": 900,        # CIS/Russia
+    # === TIER 2: Secondary regions (data-driven where available) ===
+    "LCKC": 1507,       # 60.7% intl WR, 173 games (!)
+    "LDL": 1280,        # LPL Development (est. LPL - 160)
+    "VCS": 1240,        # 25.0% intl WR, 16 games
+    "TCL": 1200,        # Turkey (est. between VCS and LTA N)
+    "CBLOL": 1150,      # Brazil (est. ~LJL level)
+    "LJL": 1222,        # 23.1% intl WR, 26 games
+    "LLA": 1150,        # Latin America (pre-LTA)
+    "LTA": 1200,        # League of the Americas (2025+)
+    "LTA N": 1384,      # 43.2% intl WR, 44 games
+    "LTA S": 1324,      # 35.0% intl WR, 20 games
+    "LCO": 1150,        # Oceania (est. ~CBLOL level)
+    "LCL": 1150,        # CIS/Russia
 
     # === TIER 2.5: European Regional Leagues ===
-    "LFL": 1000,       # France — strongest ERL
-    "LVP SL": 970,     # Spain SuperLiga
-    "PRM": 950,        # Germany
-    "NLC": 930,        # Nordic
-    "UKLC": 920,       # UK
-    "UL": 920,         # Ultraliga (Poland)
-    "HLL": 920,        # Hitpoint (Czech/Slovak)
-    "EBL": 910,        # Balkans
-    "LIT": 900,        # Italy
-    "ROL": 900,        # Romania
-    "AL": 900,         # Austria/Swiss
-    "RL": 900,         # Iberian
-    "LES": 890,        # Spain secondary
-    "HW": 900,         # Hellenic (Greece)
-    "GL": 880,         # Greek League
-    "GLL": 880,        # GLL
-    "BL": 880,         # Baltic
-    "EL": 880,         # Elite League
-    "EM": 1050,        # EU Masters
-    "EUM": 1050,       # EU Masters (alt code)
-    "NLC Aurora Open": 900,
+    # LVP SL measured at 58.1% intl WR (43 games) = 1488
+    # Other ERLs estimated relative to LVP SL using EU Masters performance
+    "LFL": 1490,        # France — traditionally strongest ERL, ~LVP SL
+    "LVP SL": 1488,     # 58.1% intl WR, 43 games (measured)
+    "PRM": 1420,        # Germany — strong ERL (~LVP SL - 70)
+    "NLC": 1380,        # Nordic (~LVP SL - 110)
+    "UKLC": 1340,       # UK
+    "UL": 1340,         # Ultraliga (Poland)
+    "HLL": 1320,        # Hitpoint (Czech/Slovak)
+    "EBL": 1300,        # Balkans
+    "LIT": 1300,        # Italy
+    "ROL": 1300,        # Romania
+    "AL": 1300,         # Austria/Swiss
+    "RL": 1300,         # Iberian
+    "LES": 1280,        # Spain secondary
+    "HW": 1300,         # Hellenic (Greece)
+    "GL": 1280,         # Greek League
+    "GLL": 1280,        # GLL
+    "BL": 1280,         # Baltic
+    "EL": 1280,         # Elite League
+    "EM": 1450,         # EU Masters (top ERL teams, measured-adjacent)
+    "EUM": 1450,        # EU Masters (alt code)
+    "NLC Aurora Open": 1300,
 
     # === TIER 3: Development / Academy ===
-    "LPLOL": 1050,     # LPL development
-    "NACL": 900,       # NA Challengers
-    "LCSA": 850,       # LCS Academy (pre-NACL)
-    "CBLOLA": 750,     # CBLOL Academy
-    "LFL2": 880,       # LFL Division 2
-    "LJLA": 850,       # LJL Academy
-    "PRMP": 850,       # Prime League Promotion
-    "LRN": 850,        # LCS amateur north
-    "LRS": 850,        # LCS amateur south
-    "EBLPA": 810,      # EBL Promotion
-    "GLLPA": 810,      # GLL Promotion
-    "Americas Cup": 950,
+    # Estimated as parent league minus ~160-200 points
+    "LPLOL": 1280,      # LPL development (~LPL - 160)
+    "NACL": 1150,       # NA Challengers (~LCS - 170)
+    "LCSA": 1100,       # LCS Academy (pre-NACL)
+    "CBLOLA": 1000,     # CBLOL Academy
+    "LFL2": 1320,       # LFL Division 2 (~LFL - 170)
+    "LJLA": 1070,       # LJL Academy
+    "PRMP": 1250,       # Prime League Promotion (~PRM - 170)
+    "LRN": 1100,        # LCS amateur north
+    "LRS": 1100,        # LCS amateur south
+    "EBLPA": 1130,      # EBL Promotion
+    "GLLPA": 1110,      # GLL Promotion
+    "Americas Cup": 1200,
 
     # === TIER 3.5: Smaller / amateur leagues ===
-    "CD": 850, "DDH": 850, "LMF": 850, "PGN": 850, "ESLOL": 850,
-    "LHE": 850, "HC": 850, "HM": 850, "UPL": 850, "NEXO": 850,
-    "LAS": 850, "PCL": 850, "PGC": 850, "RCL": 850, "DL": 850,
-    "CU": 850, "EPL": 850, "BIG": 850, "CDF": 850, "ASCI": 850,
-    "AOL": 850, "VL": 850, "BM": 850, "GSG": 850, "EGL": 850,
-    "TAL": 850, "USP": 850, "HS": 850, "OTBLX": 850, "UGP": 850,
-    "NERD": 800, "NASG": 800, "SL (LATAM)": 850, "SL": 850,
-    "CCWS": 900, "FST": 900, "CT": 850,
+    # No international data; estimated at ~1100 (between academy and minor region)
+    "NEXO": 1120,       # 14.3% intl WR, 7 games (measured but tiny sample)
+    "CD": 1100, "DDH": 1100, "LMF": 1100, "PGN": 1100, "ESLOL": 1100,
+    "LHE": 1100, "HC": 1100, "HM": 1100, "UPL": 1100,
+    "LAS": 1100, "PCL": 1100, "PGC": 1100, "RCL": 1100, "DL": 1100,
+    "CU": 1100, "EPL": 1100, "BIG": 1100, "CDF": 1100, "ASCI": 1100,
+    "AOL": 1100, "VL": 1100, "BM": 1100, "GSG": 1100, "EGL": 1100,
+    "TAL": 1100, "USP": 1100, "HS": 1100, "OTBLX": 1100, "UGP": 1100,
+    "NERD": 1050, "NASG": 1050, "SL (LATAM)": 1100, "SL": 1100,
+    "CCWS": 1150, "FST": 1150, "CT": 1100,
 }
 
 # Fallback for leagues not listed above
