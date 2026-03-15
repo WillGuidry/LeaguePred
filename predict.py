@@ -28,7 +28,8 @@ from typing import Optional
 
 from src.data.loader import load_oracle_csv
 from src.elo.engine import EloEngine
-from src.config import REGIONAL_ELO_PRIORS, REGIONAL_ELO_DEFAULT
+from src.elo.international import TournamentPredictor, PersistentInternationalElo
+from src.config import REGIONAL_ELO_PRIORS, REGIONAL_ELO_DEFAULT, INTERNATIONAL_EVENTS
 
 
 # Major leagues to include when building Elo ratings
@@ -41,109 +42,125 @@ def build_engine(
     k_factor: float = 32.0,
 ) -> tuple:
     """
-    Build an Elo engine from historical data.
+    Build an Elo engine from historical data, processing international
+    events through PersistentInternationalElo to build career international
+    ratings.
 
     Returns:
-        (engine, team_leagues) — the engine with current ratings,
-        and a dict mapping team -> most recent league.
+        (domestic_engine, team_leagues, persistent_intl)
     """
     if leagues is None:
         leagues = MAJOR_LEAGUES
 
     df = load_oracle_csv(data_path, leagues=leagues)
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df = df.sort_values("date").reset_index(drop=True)
 
-    engine = EloEngine(k_factor=k_factor)
+    # Separate domestic and international games
+    intl_mask = df["league"].isin(INTERNATIONAL_EVENTS)
+    intl_df = df[intl_mask].copy()
+    domestic_df = df[~intl_mask].copy()
+
+    # Build domestic Elo
+    domestic_engine = EloEngine(k_factor=k_factor)
     team_leagues = {}
 
-    for _, row in df.iterrows():
+    for _, row in domestic_df.iterrows():
         team_a = row["team_a"]
         team_b = row["team_b"]
         winner = row["winner"]
         league = row.get("league", None)
 
-        engine.add_team(team_a)
-        engine.add_team(team_b)
+        domestic_engine.add_team(team_a)
+        domestic_engine.add_team(team_b)
 
         if league:
             team_leagues[team_a] = league
             team_leagues[team_b] = league
 
         if pd.notna(winner):
-            engine.process_match(team_a, team_b, winner)
+            domestic_engine.process_match(team_a, team_b, winner)
 
-    return engine, team_leagues
+    # Process international events through PersistentInternationalElo
+    persistent_intl = PersistentInternationalElo()
+
+    if len(intl_df) > 0:
+        # Find tournament boundaries (gaps > 14 days)
+        intl_dates = intl_df["date"].values
+        gaps = pd.Series(intl_dates).diff().dt.days
+        tournament_starts = [0] + list(gaps[gaps > 14].index)
+
+        tournaments = []
+        for i, start_idx in enumerate(tournament_starts):
+            end_idx = tournament_starts[i + 1] if i + 1 < len(tournament_starts) else len(intl_df)
+            tournaments.append(intl_df.iloc[start_idx:end_idx])
+
+        for t_df in tournaments:
+            if len(t_df) < 3:
+                continue
+
+            # Map international teams to their domestic leagues
+            for _, row in t_df.iterrows():
+                for team in [row["team_a"], row["team_b"]]:
+                    if team not in team_leagues:
+                        team_domestic = domestic_df[
+                            (domestic_df["team_a"] == team) | (domestic_df["team_b"] == team)
+                        ]
+                        if len(team_domestic) > 0:
+                            last_row = team_domestic.iloc[-1]
+                            team_leagues[team] = last_row["league"]
+
+            predictor = TournamentPredictor(
+                domestic_engine=domestic_engine,
+                team_leagues=team_leagues,
+                persistent_intl=persistent_intl,
+            )
+
+            for _, row in t_df.iterrows():
+                winner = row["winner"]
+                if pd.notna(winner):
+                    predictor.update(row["team_a"], row["team_b"], winner)
+
+            persistent_intl.absorb_tournament(predictor)
+            persistent_intl.decay()
+
+    return domestic_engine, team_leagues, persistent_intl
 
 
-def cross_regional_adjustment(
-    engine: EloEngine,
+def predict_international(
+    domestic_engine: EloEngine,
     team_a: str,
     team_b: str,
     team_leagues: dict,
+    persistent_intl: PersistentInternationalElo,
 ) -> dict:
     """
-    Adjust Elo predictions for cross-regional matchups.
+    Predict a cross-regional match using persistent international Elo.
 
-    The problem: within-league Elo pools are separate. An LCK team at 1700
-    and a CBLOL team at 1700 are NOT the same strength.
-
-    The fix: use Lolesports regional strength scores to create a
-    "global Elo" that accounts for league-pool differences.
-
-    Method:
-        1. Get each team's within-league Elo
-        2. Center each league's Elo pool around its regional strength score
-        3. Predict using the adjusted "global" Elo values
-
-    This is equivalent to asking:
-        "If we placed these two teams on a common scale, what would
-        the Elo gap be?"
+    Teams with extensive international history (e.g. BLG) rely mostly
+    on their proven international Elo. Teams with no international
+    games (e.g. newcomers) fall back to regional priors.
     """
-    league_a = team_leagues.get(team_a)
-    league_b = team_leagues.get(team_b)
+    predictor = TournamentPredictor(
+        domestic_engine=domestic_engine,
+        team_leagues=team_leagues,
+        persistent_intl=persistent_intl,
+    )
 
-    elo_a = engine.get_rating(team_a)
-    elo_b = engine.get_rating(team_b)
+    pred = predictor.predict(team_a, team_b)
 
-    # If same league, no adjustment needed
-    if league_a == league_b:
-        return engine.predict(team_a, team_b)
+    # Add international experience info
+    info_a = persistent_intl.get_team_info(team_a)
+    info_b = persistent_intl.get_team_info(team_b)
+    pred["intl_games_a"] = info_a["intl_games"]
+    pred["intl_games_b"] = info_b["intl_games"]
+    pred["intl_weight_a"] = info_a["intl_weight"]
+    pred["intl_weight_b"] = info_b["intl_weight"]
+    pred["intl_elo_a"] = info_a["intl_elo"]
+    pred["intl_elo_b"] = info_b["intl_elo"]
+    pred["cross_regional"] = True
 
-    # Get the league-average Elo from our engine (empirical)
-    league_avg_a = _get_league_avg_elo(engine, team_leagues, league_a)
-    league_avg_b = _get_league_avg_elo(engine, team_leagues, league_b)
-
-    # Get Lolesports regional strength as target center
-    regional_a = REGIONAL_ELO_PRIORS.get(league_a, REGIONAL_ELO_DEFAULT)
-    regional_b = REGIONAL_ELO_PRIORS.get(league_b, REGIONAL_ELO_DEFAULT)
-
-    # Adjusted Elo = team's deviation from league average + regional center
-    # This preserves within-league ordering while shifting the whole pool
-    adjusted_a = (elo_a - league_avg_a) + regional_a
-    adjusted_b = (elo_b - league_avg_b) + regional_b
-
-    # Calculate expected score using adjusted values
-    diff = adjusted_a - adjusted_b
-    expected_a = 1.0 / (1.0 + 10 ** (-diff / engine.scale_factor))
-
-    return {
-        "team_a": team_a,
-        "team_b": team_b,
-        "league_a": league_a,
-        "league_b": league_b,
-        "elo_a_raw": round(elo_a, 1),
-        "elo_b_raw": round(elo_b, 1),
-        "elo_a_adjusted": round(adjusted_a, 1),
-        "elo_b_adjusted": round(adjusted_b, 1),
-        "regional_prior_a": regional_a,
-        "regional_prior_b": regional_b,
-        "elo_diff_raw": round(elo_a - elo_b, 1),
-        "elo_diff_adjusted": round(diff, 1),
-        "win_prob_a": round(expected_a, 3),
-        "win_prob_b": round(1 - expected_a, 3),
-        "predicted_winner": team_a if expected_a >= 0.5 else team_b,
-        "cross_regional": True,
-    }
+    return pred
 
 
 def _get_league_avg_elo(engine: EloEngine, team_leagues: dict, league: str) -> float:
@@ -155,30 +172,24 @@ def _get_league_avg_elo(engine: EloEngine, team_leagues: dict, league: str) -> f
 
 
 def predict_match(
-    engine: EloEngine,
+    domestic_engine: EloEngine,
     team_a: str,
     team_b: str,
     team_leagues: dict,
     international: bool = False,
+    persistent_intl: PersistentInternationalElo = None,
 ) -> dict:
     """
     Predict a single match.
-
-    Args:
-        engine: Trained Elo engine.
-        team_a: First team name.
-        team_b: Second team name.
-        team_leagues: {team: league} mapping.
-        international: Whether to apply cross-regional adjustment.
     """
     # Check teams exist
     for team in [team_a, team_b]:
-        if team not in engine.ratings:
+        if team not in domestic_engine.ratings:
             print(f"WARNING: '{team}' not found in ratings. Using default Elo.")
             print(f"  Available teams with similar names:")
-            matches = [t for t in engine.ratings if team.lower() in t.lower()]
+            matches = [t for t in domestic_engine.ratings if team.lower() in t.lower()]
             for m in matches[:5]:
-                print(f"    - {m} ({engine.ratings[m]:.0f})")
+                print(f"    - {m} ({domestic_engine.ratings[m]:.0f})")
             if not matches:
                 print(f"    (none found)")
 
@@ -186,10 +197,12 @@ def predict_match(
     league_b = team_leagues.get(team_b)
     same_league = league_a == league_b
 
-    if international and not same_league:
-        return cross_regional_adjustment(engine, team_a, team_b, team_leagues)
+    if international and not same_league and persistent_intl is not None:
+        return predict_international(
+            domestic_engine, team_a, team_b, team_leagues, persistent_intl
+        )
     else:
-        pred = engine.predict(team_a, team_b)
+        pred = domestic_engine.predict(team_a, team_b)
         pred["league_a"] = league_a
         pred["league_b"] = league_b
         pred["cross_regional"] = False
@@ -198,7 +211,7 @@ def predict_match(
 
 def print_prediction(pred: dict) -> None:
     """Pretty-print a match prediction."""
-    print(f"\n{'='*55}")
+    print(f"\n{'='*60}")
     team_a = pred["team_a"]
     team_b = pred["team_b"]
     prob_a = pred["win_prob_a"]
@@ -208,13 +221,23 @@ def print_prediction(pred: dict) -> None:
     league_b = pred.get("league_b", "?")
 
     print(f"  {team_a} ({league_a}) vs {team_b} ({league_b})")
-    print(f"{'='*55}")
+    print(f"{'='*60}")
 
     if pred.get("cross_regional"):
-        print(f"  Cross-regional adjustment: ON")
-        print(f"  Raw Elo:      {pred['elo_a_raw']:>7.0f} vs {pred['elo_b_raw']:>7.0f}  (diff: {pred['elo_diff_raw']:>+.0f})")
-        print(f"  Adjusted Elo: {pred['elo_a_adjusted']:>7.0f} vs {pred['elo_b_adjusted']:>7.0f}  (diff: {pred['elo_diff_adjusted']:>+.0f})")
-        print(f"  Regional:     {pred['regional_prior_a']:>7} vs {pred['regional_prior_b']:>7}")
+        print(f"  Cross-regional adjustment: ON (persistent intl Elo)")
+        print(f"  Prior Elo:    {pred.get('prior_elo_a', '?'):>7} vs {pred.get('prior_elo_b', '?'):>7}")
+        print(f"  Blended Elo:  {pred.get('blended_elo_a', '?'):>7} vs {pred.get('blended_elo_b', '?'):>7}")
+
+        intl_games_a = pred.get("intl_games_a", 0)
+        intl_games_b = pred.get("intl_games_b", 0)
+        intl_w_a = pred.get("intl_weight_a", 0)
+        intl_w_b = pred.get("intl_weight_b", 0)
+        intl_elo_a = pred.get("intl_elo_a", 0)
+        intl_elo_b = pred.get("intl_elo_b", 0)
+        print(f"  Intl exp:     {intl_games_a:>4} games ({intl_w_a:.0%} intl weight)"
+              f"  vs  {intl_games_b:>4} games ({intl_w_b:.0%} intl weight)")
+        if intl_elo_a > 0 or intl_elo_b > 0:
+            print(f"  Intl Elo:     {intl_elo_a:>7.0f} vs {intl_elo_b:>7.0f}")
     else:
         elo_a = pred.get("elo_a", "?")
         elo_b = pred.get("elo_b", "?")
@@ -226,7 +249,7 @@ def print_prediction(pred: dict) -> None:
     # Visual bar
     bar_len = 40
     fill_a = int(prob_a * bar_len)
-    bar = "█" * fill_a + "░" * (bar_len - fill_a)
+    bar = "\u2588" * fill_a + "\u2591" * (bar_len - fill_a)
     print(f"  {prob_a:>5.1%} [{bar}] {prob_b:>5.1%}")
     print(f"  {team_a:<20}  {'':>10}  {team_b:>20}")
     print()
@@ -259,7 +282,7 @@ def print_rankings(engine: EloEngine, team_leagues: dict, filter_league: str = N
 
 
 def main():
-    parser = argparse.ArgumentParser(description="LeaguePred — Match Predictions")
+    parser = argparse.ArgumentParser(description="LeaguePred \u2014 Match Predictions")
     parser.add_argument("--data", default="data/raw/all_matches.csv", help="Path to data")
     parser.add_argument("--team-a", help="First team name")
     parser.add_argument("--team-b", help="Second team name")
@@ -273,8 +296,8 @@ def main():
 
     args = parser.parse_args()
 
-    # Build engine
-    engine, team_leagues = build_engine(args.data, k_factor=args.k_factor)
+    # Build engine with persistent international Elo
+    engine, team_leagues, persistent_intl = build_engine(args.data, k_factor=args.k_factor)
 
     if args.rankings:
         if args.leagues:
@@ -288,13 +311,15 @@ def main():
         schedule = pd.read_csv(args.schedule)
         for _, row in schedule.iterrows():
             pred = predict_match(engine, row["team_a"], row["team_b"],
-                                 team_leagues, international=args.international)
+                                 team_leagues, international=args.international,
+                                 persistent_intl=persistent_intl)
             print_prediction(pred)
         return
 
     if args.team_a and args.team_b:
         pred = predict_match(engine, args.team_a, args.team_b,
-                             team_leagues, international=args.international)
+                             team_leagues, international=args.international,
+                             persistent_intl=persistent_intl)
         print_prediction(pred)
         return
 
