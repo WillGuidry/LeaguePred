@@ -76,13 +76,60 @@ LEAD_STATE_WEIGHTS = {
 }
 
 # =============================================================================
-# ROLLING PERFORMANCE SETTINGS
+# ROLLING MOMENTUM SETTINGS
 # =============================================================================
 
-# Number of recent games to consider for momentum
-MOMENTUM_WINDOW_SHORT = 5
-MOMENTUM_WINDOW_MEDIUM = 10
-MOMENTUM_WINDOW_LONG = 15
+# Window sizes for recent form tracking
+MOMENTUM_WINDOW_SHORT = 5    # Hot streak / slump detection
+MOMENTUM_WINDOW_MEDIUM = 10  # Short-term form
+MOMENTUM_WINDOW_LONG = 15    # Sustained form baseline
+
+# Exponential decay half-life (in games) for weighting recent results
+# A game from half_life games ago has 50% the weight of the most recent game
+MOMENTUM_DECAY_HALF_LIFE = 4.0
+
+# How much weight each signal gets in the composite momentum score
+MOMENTUM_SIGNAL_WEIGHTS = {
+    "win_rate_short": 0.30,       # Recent win rate (short window)
+    "win_rate_medium": 0.15,      # Medium-term win rate
+    "streak": 0.20,               # Current streak bonus/penalty
+    "elo_trend": 0.20,            # Elo trajectory (rising/falling)
+    "dominance_trend": 0.15,      # Quality of recent wins
+}
+
+# Streak scaling: diminishing returns on long streaks
+# 3-game streak = full value, 6+ = capped
+MOMENTUM_STREAK_CAP = 6
+
+# Minimum games before momentum module activates
+MOMENTUM_MIN_GAMES = 5
+
+# =============================================================================
+# SERIES DYNAMICS SETTINGS
+# =============================================================================
+
+# Track how teams adapt within a Bo3/Bo5 and under pressure
+
+# Weight for game-1 performance vs later games in adaptation score
+SERIES_GAME1_WEIGHT = 0.40
+
+# Minimum Bo3/Bo5 series before trusting adaptation stats
+SERIES_MIN_SERIES = 5
+
+# Rolling window of recent series to consider
+SERIES_WINDOW = 20
+
+# Feature weights for series edge computation
+SERIES_SIGNAL_WEIGHTS = {
+    "game1_win_rate": 0.25,          # How often team wins game 1
+    "adaptation_rate": 0.25,         # Win rate in games 2+ relative to game 1
+    "elimination_win_rate": 0.20,    # Performance in must-win games
+    "reverse_sweep_rate": 0.15,      # Ability to come back from 0-1 / 0-2
+    "closeout_rate": 0.15,           # Converting match point (2-1 in Bo3, 3-2 in Bo5)
+}
+
+# Bayesian prior weight for series features (same concept as lead state)
+SERIES_SHRINKAGE_WEIGHT = 5.0
 
 # =============================================================================
 # DRAFT SETTINGS

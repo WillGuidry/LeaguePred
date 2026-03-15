@@ -37,6 +37,8 @@ from src.config import (
 from src.modules.margin_of_victory import extract_mov_from_row
 from src.modules.team_state_tracker import TeamStateTracker
 from src.modules.lead_state import LeadStateModule
+from src.modules.momentum import MomentumTracker, MomentumModule
+from src.modules.series_dynamics import SeriesTracker, SeriesDynamicsModule
 
 
 def _get_regional_elo(league: str) -> float:
@@ -86,6 +88,8 @@ def run_elo_pipeline(
     detect_roster_changes: bool = True,
     use_mov: Optional[bool] = None,
     use_lead_state: Optional[bool] = None,
+    use_momentum: Optional[bool] = None,
+    use_series_dynamics: Optional[bool] = None,
 ) -> pd.DataFrame:
     """
     Run the Elo engine over a chronological sequence of matches.
@@ -110,6 +114,8 @@ def run_elo_pipeline(
         detect_roster_changes: Auto-detect and handle roster changes.
         use_mov: Enable MOV multiplier. None = use ACTIVE_MODULES config.
         use_lead_state: Enable Lead State features. None = use ACTIVE_MODULES config.
+        use_momentum: Enable Rolling Momentum features. None = use ACTIVE_MODULES config.
+        use_series_dynamics: Enable Series Dynamics features. None = use ACTIVE_MODULES config.
 
     Returns:
         DataFrame with original data plus prediction columns.
@@ -125,6 +131,8 @@ def run_elo_pipeline(
     # Determine which modules are active
     mov_active = use_mov if use_mov is not None else ACTIVE_MODULES.get("margin_of_victory", False)
     lead_state_active = use_lead_state if use_lead_state is not None else ACTIVE_MODULES.get("lead_state", False)
+    momentum_active = use_momentum if use_momentum is not None else ACTIVE_MODULES.get("rolling_performance", False)
+    series_active = use_series_dynamics if use_series_dynamics is not None else ACTIVE_MODULES.get("series_dynamics", False)
 
     # Initialize Lead State tracker and module
     tracker = None
@@ -136,6 +144,20 @@ def run_elo_pipeline(
             shrinkage_weight=LEAD_STATE_SHRINKAGE_WEIGHT,
         )
         lead_state_module = LeadStateModule(tracker)
+
+    # Initialize Momentum tracker and module
+    momentum_tracker = None
+    momentum_module = None
+    if momentum_active:
+        momentum_tracker = MomentumTracker()
+        momentum_module = MomentumModule(momentum_tracker)
+
+    # Initialize Series Dynamics tracker and module
+    series_tracker = None
+    series_module = None
+    if series_active:
+        series_tracker = SeriesTracker()
+        series_module = SeriesDynamicsModule(series_tracker)
 
     predictions = []
     last_split = None
@@ -214,6 +236,35 @@ def run_elo_pipeline(
             lead_feats_a = lead_state_module._last_features_a
             lead_feats_b = lead_state_module._last_features_b
 
+        # Momentum features (pre-match, from prior games only)
+        momentum_edge = 0.0
+        momentum_confidence = 0.0
+        momentum_signals_a = {}
+        momentum_signals_b = {}
+        if momentum_active and momentum_module:
+            momentum_edge = momentum_module.compute(team_a, team_b)
+            momentum_confidence = momentum_module.confidence()
+            momentum_signals_a = momentum_module._last_signals_a
+            momentum_signals_b = momentum_module._last_signals_b
+
+        # Series Dynamics features (pre-match, from prior series only)
+        series_edge = 0.0
+        series_confidence = 0.0
+        series_signals_a = {}
+        series_signals_b = {}
+        if series_active and series_module:
+            # Build match context for series-aware prediction
+            game_number = int(row.get("game_number", 1) or 1) if "game_number" in df.columns else 1
+            bo_format = _infer_bo_format(row, df)
+            series_ctx = {
+                "bo_format": bo_format,
+                "game_number": game_number,
+            }
+            series_edge = series_module.compute(team_a, team_b, series_ctx)
+            series_confidence = series_module.confidence()
+            series_signals_a = series_module._last_signals_a
+            series_signals_b = series_module._last_signals_b
+
         # Actual outcome (1 if team_a won, 0 if team_b won)
         if winner == team_a:
             actual_a = 1
@@ -251,6 +302,25 @@ def run_elo_pipeline(
                 pred_row[f"ls_{feat}_a"] = lead_feats_a.get(feat, np.nan)
                 pred_row[f"ls_{feat}_b"] = lead_feats_b.get(feat, np.nan)
 
+        # Add momentum features to output
+        if momentum_active:
+            pred_row["momentum_edge"] = momentum_edge
+            pred_row["momentum_confidence"] = momentum_confidence
+            for sig in ["win_rate_short", "win_rate_medium", "streak",
+                        "elo_trend", "dominance_trend"]:
+                pred_row[f"mom_{sig}_a"] = momentum_signals_a.get(sig, np.nan)
+                pred_row[f"mom_{sig}_b"] = momentum_signals_b.get(sig, np.nan)
+
+        # Add series dynamics features to output
+        if series_active:
+            pred_row["series_edge"] = series_edge
+            pred_row["series_confidence"] = series_confidence
+            for sig in ["game1_win_rate", "adaptation_rate",
+                        "elimination_win_rate", "reverse_sweep_rate",
+                        "closeout_rate"]:
+                pred_row[f"ser_{sig}_a"] = series_signals_a.get(sig, np.nan)
+                pred_row[f"ser_{sig}_b"] = series_signals_b.get(sig, np.nan)
+
         predictions.append(pred_row)
 
         # --- NOW update ratings with the result ---
@@ -261,10 +331,79 @@ def run_elo_pipeline(
             if lead_state_active and tracker:
                 _record_team_stats(tracker, row, team_a, team_b, winner)
 
+            # Update Momentum tracker
+            if momentum_active and momentum_tracker:
+                dominance = mov_multiplier / 2.0 if mov_active else 0.5
+                momentum_tracker.record_game(
+                    team_a,
+                    result=int(actual_a),
+                    elo_after=engine.ratings.get(team_a, default_elo),
+                    dominance=dominance if actual_a == 1 else 1.0 - dominance,
+                )
+                momentum_tracker.record_game(
+                    team_b,
+                    result=1 - int(actual_a),
+                    elo_after=engine.ratings.get(team_b, default_elo),
+                    dominance=(1.0 - dominance) if actual_a == 1 else dominance,
+                )
+
+            # Update Series Dynamics tracker
+            if series_active and series_tracker:
+                game_number = int(row.get("game_number", 1) or 1) if "game_number" in df.columns else 1
+                bo_format = _infer_bo_format(row, df)
+                if bo_format > 1:
+                    series_tracker.record_game(
+                        team=team_a, opponent=team_b,
+                        game_number=game_number,
+                        result=int(actual_a), bo_format=bo_format,
+                    )
+                    series_tracker.record_game(
+                        team=team_b, opponent=team_a,
+                        game_number=game_number,
+                        result=1 - int(actual_a), bo_format=bo_format,
+                    )
+
     pred_df = pd.DataFrame(predictions)
     result = pd.concat([df.reset_index(drop=True), pred_df], axis=1)
 
     return result
+
+
+def _infer_bo_format(row, df: pd.DataFrame) -> int:
+    """
+    Infer the best-of format for a game.
+
+    Uses the 'playoffs' flag and 'game_number' column as heuristics:
+        - Playoffs typically use Bo5 (LCK/LPL/Worlds) or Bo3
+        - Regular season games with game_number > 1 are Bo3
+        - Single games (game_number=1, no further games) are Bo1
+
+    Returns:
+        1 for Bo1, 3 for Bo3, 5 for Bo5.
+    """
+    game_number = 1
+    if "game_number" in df.columns:
+        gn = row.get("game_number") if hasattr(row, "get") else getattr(row, "game_number", None)
+        if gn is not None and not (isinstance(gn, float) and np.isnan(gn)):
+            game_number = int(gn)
+
+    playoffs = False
+    if "playoffs" in df.columns:
+        pf = row.get("playoffs") if hasattr(row, "get") else getattr(row, "playoffs", None)
+        if pf is not None and not (isinstance(pf, float) and np.isnan(pf)):
+            playoffs = bool(int(pf))
+
+    # If game_number >= 4, it must be Bo5
+    if game_number >= 4:
+        return 5
+    # If game_number >= 2, at least Bo3
+    if game_number >= 2:
+        return 5 if playoffs else 3
+    # Game 1 with playoffs flag: assume Bo5
+    if playoffs:
+        return 5
+    # Default: Bo1 (regular season single game)
+    return 1
 
 
 def _regress_regional(engine: EloEngine, team_leagues: dict, fraction: float) -> None:
@@ -375,6 +514,8 @@ def evaluate_elo(
     model_name: str = "Elo Baseline",
     use_mov: Optional[bool] = None,
     use_lead_state: Optional[bool] = None,
+    use_momentum: Optional[bool] = None,
+    use_series_dynamics: Optional[bool] = None,
 ) -> dict:
     """
     Run Elo on the full dataset and evaluate on the test portion.
@@ -392,6 +533,8 @@ def evaluate_elo(
         detect_roster_changes=detect_roster_changes,
         use_mov=use_mov,
         use_lead_state=use_lead_state,
+        use_momentum=use_momentum,
+        use_series_dynamics=use_series_dynamics,
     )
 
     train, test = temporal_split(results, test_fraction=test_fraction)
