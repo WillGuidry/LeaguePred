@@ -39,6 +39,7 @@ from src.modules.team_state_tracker import TeamStateTracker
 from src.modules.lead_state import LeadStateModule
 from src.modules.momentum import MomentumTracker, MomentumModule
 from src.modules.series_dynamics import SeriesTracker, SeriesDynamicsModule
+from src.modules.lane_dominance import LaneDominanceTracker, LaneDominanceModule
 
 
 def _get_regional_elo(league: str) -> float:
@@ -90,6 +91,7 @@ def run_elo_pipeline(
     use_lead_state: Optional[bool] = None,
     use_momentum: Optional[bool] = None,
     use_series_dynamics: Optional[bool] = None,
+    use_lane_dominance: Optional[bool] = None,
 ) -> pd.DataFrame:
     """
     Run the Elo engine over a chronological sequence of matches.
@@ -133,6 +135,7 @@ def run_elo_pipeline(
     lead_state_active = use_lead_state if use_lead_state is not None else ACTIVE_MODULES.get("lead_state", False)
     momentum_active = use_momentum if use_momentum is not None else ACTIVE_MODULES.get("rolling_performance", False)
     series_active = use_series_dynamics if use_series_dynamics is not None else ACTIVE_MODULES.get("series_dynamics", False)
+    lane_dom_active = use_lane_dominance if use_lane_dominance is not None else ACTIVE_MODULES.get("lane_dominance", False)
 
     # Initialize Lead State tracker and module
     tracker = None
@@ -158,6 +161,17 @@ def run_elo_pipeline(
     if series_active:
         series_tracker = SeriesTracker()
         series_module = SeriesDynamicsModule(series_tracker)
+
+    # Initialize Lane Dominance tracker and module
+    lane_dom_tracker = None
+    lane_dom_module = None
+    if lane_dom_active:
+        lane_dom_tracker = LaneDominanceTracker(
+            window=LEAD_STATE_WINDOW,
+            min_games=LEAD_STATE_MIN_GAMES,
+            shrinkage_weight=LEAD_STATE_SHRINKAGE_WEIGHT,
+        )
+        lane_dom_module = LaneDominanceModule(lane_dom_tracker)
 
     predictions = []
     last_split = None
@@ -265,6 +279,17 @@ def run_elo_pipeline(
             series_signals_a = series_module._last_signals_a
             series_signals_b = series_module._last_signals_b
 
+        # Lane Dominance features (pre-match, from prior games only)
+        lane_dom_edge = 0.0
+        lane_dom_confidence = 0.0
+        lane_dom_feats_a = {}
+        lane_dom_feats_b = {}
+        if lane_dom_active and lane_dom_module:
+            lane_dom_edge = lane_dom_module.compute(team_a, team_b)
+            lane_dom_confidence = lane_dom_module.confidence()
+            lane_dom_feats_a = lane_dom_module._last_features_a
+            lane_dom_feats_b = lane_dom_module._last_features_b
+
         # Actual outcome (1 if team_a won, 0 if team_b won)
         if winner == team_a:
             actual_a = 1
@@ -337,6 +362,23 @@ def run_elo_pipeline(
                 pred_row[f"ser_{sig}_a"] = series_signals_a.get(sig, np.nan)
                 pred_row[f"ser_{sig}_b"] = series_signals_b.get(sig, np.nan)
 
+        # Add lane dominance features to output
+        if lane_dom_active:
+            pred_row["lane_dom_edge"] = lane_dom_edge
+            pred_row["lane_dom_confidence"] = lane_dom_confidence
+            lane_dom_feature_names = [
+                "lane_dominance_score", "best_lane_gd10", "worst_lane_gd10",
+                "lane_spread", "solo_lane_avg_gd10", "bot_lane_avg_gd10",
+                "jng_proximity_gd10", "lane_consistency",
+            ]
+            # Per-lane features
+            for pos in ["top", "jng", "mid", "bot", "sup"]:
+                for suffix in ["avg_gd10", "avg_gd15", "avg_xpd10", "avg_csd10", "dominance_score"]:
+                    lane_dom_feature_names.append(f"{pos}_{suffix}")
+            for feat in lane_dom_feature_names:
+                pred_row[f"ld_{feat}_a"] = lane_dom_feats_a.get(feat, np.nan)
+                pred_row[f"ld_{feat}_b"] = lane_dom_feats_b.get(feat, np.nan)
+
         predictions.append(pred_row)
 
         # --- NOW update ratings with the result ---
@@ -362,6 +404,15 @@ def run_elo_pipeline(
                     elo_after=engine.ratings.get(team_b, default_elo),
                     dominance=(1.0 - dominance) if actual_a == 1 else dominance,
                 )
+
+            # Update Lane Dominance tracker
+            if lane_dom_active and lane_dom_tracker:
+                lane_stats_a = row.get("lane_stats_a") if hasattr(row, "get") else getattr(row, "lane_stats_a", None)
+                lane_stats_b = row.get("lane_stats_b") if hasattr(row, "get") else getattr(row, "lane_stats_b", None)
+                if isinstance(lane_stats_a, dict) and lane_stats_a:
+                    lane_dom_tracker.record_game(team_a, lane_stats_a)
+                if isinstance(lane_stats_b, dict) and lane_stats_b:
+                    lane_dom_tracker.record_game(team_b, lane_stats_b)
 
             # Update Series Dynamics tracker
             if series_active and series_tracker:

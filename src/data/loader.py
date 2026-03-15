@@ -119,6 +119,9 @@ def _parse_oracle_format(df: pd.DataFrame, min_date: Optional[str]) -> pd.DataFr
     # Build roster lookup: {gameid: {teamname: [player1, player2, ...]}}
     roster_lookup = _build_roster_lookup(player_rows)
 
+    # Build lane stats lookup: {gameid: {teamname: {position: {stat: val}}}}
+    lane_stats_lookup = _build_lane_stats_lookup(player_rows)
+
     games = []
     for game_id, group in team_rows.groupby("gameid"):
         if len(group) != 2:
@@ -134,6 +137,11 @@ def _parse_oracle_format(df: pd.DataFrame, min_date: Optional[str]) -> pd.DataFr
         team_col = "teamname" if "teamname" in row_a.index else "team"
         game["roster_a"] = rosters.get(row_a.get(team_col), [])
         game["roster_b"] = rosters.get(row_b.get(team_col), [])
+
+        # Attach lane stats
+        lane_stats = lane_stats_lookup.get(game_id, {})
+        game["lane_stats_a"] = lane_stats.get(row_a.get(team_col), {})
+        game["lane_stats_b"] = lane_stats.get(row_b.get(team_col), {})
 
         games.append(game)
 
@@ -166,6 +174,46 @@ def _build_roster_lookup(player_rows: pd.DataFrame) -> dict:
         for team, team_group in game_group.groupby(team_col):
             players = sorted(team_group[player_col].dropna().unique().tolist())
             lookup[game_id][team] = players
+
+    return lookup
+
+
+def _build_lane_stats_lookup(player_rows: pd.DataFrame) -> dict:
+    """
+    Build a lookup of per-lane player stats per game per team.
+
+    Returns:
+        {gameid: {teamname: {position: {stat_name: value, ...}}}}
+    """
+    if player_rows.empty:
+        return {}
+
+    team_col = "teamname" if "teamname" in player_rows.columns else "team"
+    lane_stat_cols = [
+        "golddiffat10", "golddiffat15", "xpdiffat10", "xpdiffat15",
+        "csdiffat10", "csdiffat15", "kills", "deaths", "assists",
+        "damageshare", "earnedgoldshare", "dpm", "visionscore",
+    ]
+    available_cols = [c for c in lane_stat_cols if c in player_rows.columns]
+
+    lookup = {}
+    for game_id, game_group in player_rows.groupby("gameid"):
+        lookup[game_id] = {}
+        for team, team_group in game_group.groupby(team_col):
+            team_lanes = {}
+            for _, player_row in team_group.iterrows():
+                pos = player_row.get("position")
+                if pos not in ("top", "jng", "mid", "bot", "sup"):
+                    continue
+                stats = {}
+                for col in available_cols:
+                    val = player_row.get(col)
+                    try:
+                        stats[col] = float(val) if pd.notna(val) else 0.0
+                    except (TypeError, ValueError):
+                        stats[col] = 0.0
+                team_lanes[pos] = stats
+            lookup[game_id][team] = team_lanes
 
     return lookup
 
