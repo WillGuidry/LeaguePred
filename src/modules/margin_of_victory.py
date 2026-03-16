@@ -39,15 +39,15 @@ def _normalize_game_duration(gamelength_seconds: float) -> float:
 
     Uses a sigmoid so that:
       - Sub-25 min stomps → ~1.0 (max dominance)
-      - ~30 min (1800s) → ~0.73 (clear win)
+      - ~30 min (1800s) → ~0.95 (clear win)
       - ~35 min (2100s) → ~0.5 (average)
-      - 40+ min → compresses toward 0 (coinflip territory)
+      - 40+ min → effectively 0 (coinflip, no dominance signal)
 
-    The sigmoid is centered at 2100s (35 min) with a steepness tuned so
-    games beyond 40 min are all treated as near-zero dominance.
+    The sigmoid is centered at 2100s (35 min) with a tight steepness
+    so games beyond 40 min contribute near-zero dominance.
     """
-    center = 2100.0   # 35 min — midpoint
-    steepness = 600.0  # controls transition sharpness
+    center = 2100.0  # 35 min — midpoint
+    steepness = 100.0  # tight transition: 30min=dominant, 40min=coinflip
     return _sigmoid(-(gamelength_seconds - center) / steepness)
 
 
