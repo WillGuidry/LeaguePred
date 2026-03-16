@@ -206,6 +206,89 @@ def _series_prob_to_game_prob(series_prob: float, best_of: int) -> float:
     return (lo + hi) / 2
 
 
+def kelly_criterion(
+    model_prob: float,
+    market_odds: float,
+    bankroll: float,
+    odds_format: str = "american",
+) -> dict:
+    """
+    Compute Kelly Criterion bet sizing.
+
+    Args:
+        model_prob: Our model's estimated win probability for the bet (0-1).
+        market_odds: The sportsbook odds for this outcome.
+        bankroll: Total portfolio value in dollars.
+        odds_format: "american" or "decimal".
+
+    Returns:
+        Dict with full, half, and quarter Kelly stakes and expected value.
+    """
+    if odds_format == "american":
+        if market_odds < 0:
+            decimal_odds = 1 + 100 / abs(market_odds)
+        else:
+            decimal_odds = 1 + market_odds / 100
+    elif odds_format == "decimal":
+        decimal_odds = market_odds
+    else:
+        raise ValueError(f"Unknown odds_format: {odds_format}")
+
+    # b = net profit on a $1 bet (decimal odds - 1)
+    b = decimal_odds - 1
+    q = 1 - model_prob
+
+    # Kelly fraction: f* = (bp - q) / b
+    if b <= 0:
+        kelly_frac = 0.0
+    else:
+        kelly_frac = (b * model_prob - q) / b
+
+    # Clamp: no bet if edge is negative, no more than 100%
+    kelly_frac = max(0.0, min(1.0, kelly_frac))
+
+    implied_prob = 1 / decimal_odds
+    edge = model_prob - implied_prob
+    ev_per_dollar = model_prob * b - q  # EV per $1 wagered
+
+    return {
+        "model_prob": model_prob,
+        "market_odds": market_odds,
+        "decimal_odds": decimal_odds,
+        "implied_prob": implied_prob,
+        "edge": edge,
+        "ev_per_dollar": ev_per_dollar,
+        "kelly_fraction": kelly_frac,
+        "full_kelly": kelly_frac * bankroll,
+        "half_kelly": kelly_frac * bankroll * 0.5,
+        "quarter_kelly": kelly_frac * bankroll * 0.25,
+        "bankroll": bankroll,
+    }
+
+
+def print_kelly(kelly_result: dict, team_name: str = "Selection") -> None:
+    """Pretty-print Kelly Criterion results."""
+    r = kelly_result
+    print(f"\n{'='*60}")
+    print(f"  Kelly Criterion: {team_name}")
+    print(f"{'='*60}")
+    print(f"  Model probability:   {r['model_prob']:.1%}")
+    print(f"  Market implied prob:  {r['implied_prob']:.1%}")
+    print(f"  Edge:                {r['edge']:+.1%}")
+    print(f"  Market odds:         {r['market_odds']} ({r['decimal_odds']:.2f} decimal)")
+    print(f"  EV per $1 wagered:   ${r['ev_per_dollar']:+.3f}")
+    print(f"  Bankroll:            ${r['bankroll']:,.2f}")
+    print()
+
+    if r['kelly_fraction'] <= 0:
+        print(f"  NO BET — negative or zero edge")
+    else:
+        print(f"  Full Kelly:     {r['kelly_fraction']:>6.1%}  =  ${r['full_kelly']:>10,.2f}")
+        print(f"  Half Kelly:     {r['kelly_fraction']/2:>6.1%}  =  ${r['half_kelly']:>10,.2f}")
+        print(f"  Quarter Kelly:  {r['kelly_fraction']/4:>6.1%}  =  ${r['quarter_kelly']:>10,.2f}")
+    print()
+
+
 def print_series_prediction(result: dict, team_a: str = "Team A", team_b: str = "Team B") -> None:
     """Pretty-print series score prediction."""
     print(f"\n{'='*60}")

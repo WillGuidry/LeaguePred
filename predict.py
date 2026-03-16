@@ -34,6 +34,8 @@ from src.modules.series_prediction import (
     predict_series,
     predict_series_from_odds,
     print_series_prediction,
+    kelly_criterion,
+    print_kelly,
 )
 
 
@@ -314,6 +316,15 @@ def main():
     parser.add_argument("--win-prob", type=float, default=None,
                         help="Per-game win probability for team A (0-1). "
                              "Use with --series for series score prediction without Elo data.")
+    parser.add_argument("--bankroll", type=float, default=None,
+                        help="Portfolio value ($) for Kelly Criterion sizing. "
+                             "Use with --market-odds.")
+    parser.add_argument("--market-odds", nargs=2, type=float, metavar=("ODDS_A", "ODDS_B"),
+                        help="Market odds (American) for team A and B series winner. "
+                             "Example: --market-odds -150 +130")
+    parser.add_argument("--market-odds-decimal", nargs=2, type=float, metavar=("ODDS_A", "ODDS_B"),
+                        help="Market odds (decimal) for team A and B series winner. "
+                             "Example: --market-odds-decimal 1.67 2.30")
 
     args = parser.parse_args()
 
@@ -366,6 +377,19 @@ def main():
         if args.series:
             series_result = predict_series(pred["win_prob_a"], best_of=args.series)
             print_series_prediction(series_result, args.team_a, args.team_b)
+
+            # Kelly Criterion if market odds and bankroll provided
+            if args.bankroll and (args.market_odds or args.market_odds_decimal):
+                odds_fmt = "american" if args.market_odds else "decimal"
+                odds = args.market_odds or args.market_odds_decimal
+                model_prob_a = series_result["team_a_wins"]
+                model_prob_b = series_result["team_b_wins"]
+
+                kelly_a = kelly_criterion(model_prob_a, odds[0], args.bankroll, odds_format=odds_fmt)
+                kelly_b = kelly_criterion(model_prob_b, odds[1], args.bankroll, odds_format=odds_fmt)
+
+                print_kelly(kelly_a, args.team_a)
+                print_kelly(kelly_b, args.team_b)
         return
 
     parser.print_help()
