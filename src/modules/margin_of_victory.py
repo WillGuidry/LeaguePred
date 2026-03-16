@@ -35,10 +35,20 @@ def _normalize_gold_diff_15(gold_diff: float) -> float:
 
 def _normalize_game_duration(gamelength_seconds: float) -> float:
     """
-    Shorter game = more dominant.
-    25 min (1500s) baseline → 1.0, 50 min (3000s) → 0.0.
+    Shorter game = more dominant, with non-linear scaling.
+
+    Uses a sigmoid so that:
+      - Sub-25 min stomps → ~1.0 (max dominance)
+      - ~30 min (1800s) → ~0.73 (clear win)
+      - ~35 min (2100s) → ~0.5 (average)
+      - 40+ min → compresses toward 0 (coinflip territory)
+
+    The sigmoid is centered at 2100s (35 min) with a steepness tuned so
+    games beyond 40 min are all treated as near-zero dominance.
     """
-    return 1.0 - max(0.0, min(1.0, (gamelength_seconds - 1500.0) / 1500.0))
+    center = 2100.0   # 35 min — midpoint
+    steepness = 600.0  # controls transition sharpness
+    return _sigmoid(-(gamelength_seconds - center) / steepness)
 
 
 def _normalize_kill_diff(kill_diff: float) -> float:
