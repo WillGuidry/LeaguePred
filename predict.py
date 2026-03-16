@@ -30,6 +30,11 @@ from src.data.loader import load_oracle_csv
 from src.elo.engine import EloEngine
 from src.elo.international import TournamentPredictor, PersistentInternationalElo
 from src.config import REGIONAL_ELO_PRIORS, REGIONAL_ELO_DEFAULT, INTERNATIONAL_EVENTS
+from src.modules.series_prediction import (
+    predict_series,
+    predict_series_from_odds,
+    print_series_prediction,
+)
 
 
 # Major leagues to include when building Elo ratings
@@ -298,8 +303,39 @@ def main():
                         help="Filter rankings by league(s)")
     parser.add_argument("--schedule", help="CSV with team_a, team_b columns to batch predict")
     parser.add_argument("--k-factor", type=float, default=32.0)
+    parser.add_argument("--series", type=int, choices=[1, 3, 5], default=None,
+                        help="Predict series scores for BO1/BO3/BO5")
+    parser.add_argument("--odds", nargs=2, type=float, metavar=("ODDS_A", "ODDS_B"),
+                        help="Series winner odds (American) to derive per-game probability. "
+                             "Example: --odds -150 +130")
+    parser.add_argument("--odds-decimal", nargs=2, type=float, metavar=("ODDS_A", "ODDS_B"),
+                        help="Series winner odds (decimal) to derive per-game probability. "
+                             "Example: --odds-decimal 1.67 2.30")
+    parser.add_argument("--win-prob", type=float, default=None,
+                        help="Per-game win probability for team A (0-1). "
+                             "Use with --series for series score prediction without Elo data.")
 
     args = parser.parse_args()
+
+    # Series prediction from odds or manual win probability (no data needed)
+    if args.odds or args.odds_decimal or args.win_prob is not None:
+        best_of = args.series or 3
+        team_a_name = args.team_a or "Team A"
+        team_b_name = args.team_b or "Team B"
+
+        if args.odds:
+            result = predict_series_from_odds(
+                args.odds[0], args.odds[1], best_of=best_of, odds_format="american"
+            )
+        elif args.odds_decimal:
+            result = predict_series_from_odds(
+                args.odds_decimal[0], args.odds_decimal[1], best_of=best_of, odds_format="decimal"
+            )
+        else:
+            result = predict_series(args.win_prob, best_of=best_of)
+
+        print_series_prediction(result, team_a_name, team_b_name)
+        return
 
     # Build engine with persistent international Elo
     engine, team_leagues, persistent_intl = build_engine(args.data, k_factor=args.k_factor)
@@ -326,6 +362,10 @@ def main():
                              team_leagues, international=args.international,
                              persistent_intl=persistent_intl)
         print_prediction(pred)
+
+        if args.series:
+            series_result = predict_series(pred["win_prob_a"], best_of=args.series)
+            print_series_prediction(series_result, args.team_a, args.team_b)
         return
 
     parser.print_help()
