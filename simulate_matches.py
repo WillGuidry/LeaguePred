@@ -128,9 +128,9 @@ def main():
         delta = elo - prior
         print(f"  {team:<28} {league:<7} {elo:>7.0f}  (prior: {prior}, {delta:+.0f})")
 
-    # ── Phase 4: Predict matchups ─────────────────────────────────────
+    # ── Phase 4: Predict matchups + Bo5 series odds ─────────────────
     print(f"\n{'='*60}")
-    print("  MATCH PREDICTIONS")
+    print("  MATCH PREDICTIONS + Bo5 SERIES ODDS")
     print(f"{'='*60}")
 
     for team_a, team_b in MATCHES:
@@ -139,6 +139,58 @@ def main():
         pred["league_b"] = team_leagues.get(team_b, "?")
         pred["cross_regional"] = False
         print_prediction(pred)
+
+        p = pred["win_prob_a"]
+        q = 1 - p
+        print_bo5_odds(team_a, team_b, p, q)
+
+
+def print_bo5_odds(team_a: str, team_b: str, p: float, q: float):
+    """
+    Print Bo5 series length probabilities.
+
+    In a Bo5, the possible outcomes are:
+      3-0:  p^3                      or  q^3
+      3-1:  C(3,1) * p^3 * q        or  C(3,1) * q^3 * p
+      3-2:  C(4,2) * p^3 * q^2      or  C(4,2) * q^3 * p^2
+
+    The deciding game must be won by the series winner, so the
+    combinatorics count how many ways the loser wins exactly k
+    of the first (2+k) games.
+    """
+    # Team A wins
+    a_30 = p**3
+    a_31 = 3 * (p**3) * q
+    a_32 = 6 * (p**3) * (q**2)
+
+    # Team B wins
+    b_30 = q**3
+    b_31 = 3 * (q**3) * p
+    b_32 = 6 * (q**3) * (p**2)
+
+    # Series length probabilities
+    p_3games = a_30 + b_30
+    p_4games = a_31 + b_31
+    p_5games = a_32 + b_32
+
+    # Series winner probabilities
+    p_a_wins = a_30 + a_31 + a_32
+    p_b_wins = b_30 + b_31 + b_32
+
+    print(f"  {'─'*56}")
+    print(f"  Bo5 SERIES BREAKDOWN")
+    print(f"  {'─'*56}")
+    print(f"  Series winner:  {team_a}: {p_a_wins:.1%}   {team_b}: {p_b_wins:.1%}")
+    print()
+    print(f"  {'Score':<12} {team_a + ' wins':<20} {team_b + ' wins':<20} {'Total':<10}")
+    print(f"  {'─'*56}")
+    print(f"  {'3-0':<12} {a_30:>8.1%}{'':12} {b_30:>8.1%}{'':12} {p_3games:>8.1%}")
+    print(f"  {'3-1':<12} {a_31:>8.1%}{'':12} {b_31:>8.1%}{'':12} {p_4games:>8.1%}")
+    print(f"  {'3-2':<12} {a_32:>8.1%}{'':12} {b_32:>8.1%}{'':12} {p_5games:>8.1%}")
+    print()
+    print(f"  Goes to Game 4+:  {p_4games + p_5games:.1%}")
+    print(f"  Goes to Game 5:   {p_5games:.1%}")
+    print()
 
 
 if __name__ == "__main__":
