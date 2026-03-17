@@ -132,6 +132,7 @@ REGIONAL_ELO_PRIORS = {
     "MSI": 1300,
     "WLDs": 1300,      # Worlds
     "EWC": 1200,       # Esports World Cup
+    "FST": 1300,       # First Stand Tournament (annual, since 2025)
     "Asia Master": 1300,
     "ASI": 1200,
     "IC": 1200,
@@ -203,7 +204,7 @@ REGIONAL_ELO_PRIORS = {
 # Fallback for leagues not listed above
 REGIONAL_ELO_DEFAULT = 900
 
-INTERNATIONAL_EVENTS = ["MSI", "WLDs", "EWC", "Asia Master"]
+INTERNATIONAL_EVENTS = ["MSI", "WLDs", "EWC", "Asia Master", "FST"]
 
 # =============================================================================
 # PERSISTENT INTERNATIONAL ELO SETTINGS
