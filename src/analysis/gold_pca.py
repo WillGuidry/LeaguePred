@@ -1239,9 +1239,12 @@ def run_pca_analysis(X: np.ndarray, y: np.ndarray, feature_names: list,
     for rank, (name, avg, mx, count) in enumerate(family_ranks, 1):
         print(f"{rank:<6} {name:<45} {avg:>7.4f} {mx:>7.4f} {count:>7}")
 
+    # Compute total PCs needed for 90% variance (using full PCA)
+    full_pca = PCA()
+    full_pca.fit(X_scaled)
     total_var_90 = 0
     cumulative = 0.0
-    for i, var in enumerate(pca.explained_variance_ratio_):
+    for i, var in enumerate(full_pca.explained_variance_ratio_):
         cumulative += var
         if cumulative >= 0.90:
             total_var_90 = i + 1
