@@ -104,6 +104,7 @@ class GoldPredictionModel:
         targets_gd20 = []
         targets_win = []
         elo_probs = []  # Pure ELO probability for team_a (captured BEFORE update)
+        player_elo_diffs = []  # Avg player ELO diff (team_a - team_b)
         valid_mask = []
 
         print(f"Processing {len(games)} games chronologically...")
@@ -129,6 +130,18 @@ class GoldPredictionModel:
             # Capture pure ELO probability BEFORE update (no leakage)
             elo_prob_a = self.team_elo.expected(team_a, team_b)
             elo_probs.append(elo_prob_a)
+
+            # Capture average player ELO diff BEFORE update
+            players_a_elos, players_b_elos = [], []
+            game_pdata = pg_index.get(game["gameid"], [])
+            for pg in game_pdata:
+                if pg["team"] == team_a:
+                    players_a_elos.append(self.player_elo.get_rating(pg["player"]))
+                elif pg["team"] == team_b:
+                    players_b_elos.append(self.player_elo.get_rating(pg["player"]))
+            avg_pelo_a = np.mean(players_a_elos) if players_a_elos else 1500.0
+            avg_pelo_b = np.mean(players_b_elos) if players_b_elos else 1500.0
+            player_elo_diffs.append(avg_pelo_a - avg_pelo_b)
 
             # === PREDICT PHASE ===
             game_player_data = pg_index.get(game["gameid"], [])
@@ -164,6 +177,7 @@ class GoldPredictionModel:
         y_gd20 = np.array(targets_gd20)
         y_win = np.array(targets_win)
         elo_p = np.array(elo_probs)
+        pelo_diff = np.array(player_elo_diffs)
         valid = np.array(valid_mask)
 
         print(f"Total: {len(X)} games, {valid.sum()} valid for training")
@@ -174,6 +188,7 @@ class GoldPredictionModel:
         y20_v = y_gd20[valid]
         ywin_v = y_win[valid]
         elo_v = elo_p[valid]
+        pelo_v = pelo_diff[valid]
 
         # Handle NaN in gd20
         gd20_valid = ~np.isnan(y20_v) & (y20_v != 0.0)
@@ -185,6 +200,7 @@ class GoldPredictionModel:
         y20_train, y20_test = y20_v[:split_idx], y20_v[split_idx:]
         ywin_train, ywin_test = ywin_v[:split_idx], ywin_v[split_idx:]
         elo_train, elo_test = elo_v[:split_idx], elo_v[split_idx:]
+        pelo_train, pelo_test = pelo_v[:split_idx], pelo_v[split_idx:]
 
         # Standardize
         self.scaler = StandardScaler()
@@ -240,116 +256,160 @@ class GoldPredictionModel:
             print(f"  {self.feature_names[j]:<55} {importances[j]:.4f}")
 
         # =================================================================
-        # ELO + GOLD BLEND ANALYSIS
+        # LAYERED BLEND ANALYSIS
+        # =================================================================
+        # Layer 0: Team ELO only (the baseline — regional priors + K=32 updates)
+        # Layer 1: + Player ELO diff (avg player Elo difference across 5 positions)
+        # Layer 2: + Predicted Gold diff (gold@10 tilt — large gold → tilt odds)
+        # Layer 3: + All three together
+        #
+        # Each layer uses logistic regression on logits so we can read off
+        # exactly how many percentage points each signal adds.
         # =================================================================
         print(f"\n{'='*70}")
-        print("ELO + GOLD BLEND ANALYSIS")
+        print("LAYERED BLEND: WHAT DOES EACH SIGNAL ADD TO ELO?")
         print(f"{'='*70}")
 
-        # --- ELO-only metrics on test set ---
-        elo_clipped = np.clip(elo_test, 0.01, 0.99)
-        ll_elo = log_loss(ywin_test, elo_clipped)
-        acc_elo = accuracy_score(ywin_test, (elo_test > 0.5).astype(int))
-        brier_elo = brier_score_loss(ywin_test, elo_clipped)
-
-        print(f"\n  ELO-only (test set, {len(ywin_test)} games):")
-        print(f"    Log Loss:  {ll_elo:.4f}")
-        print(f"    Accuracy:  {acc_elo:.1%}")
-        print(f"    Brier:     {brier_elo:.4f}")
-
-        # --- Gold-only metrics ---
-        gold_clipped = np.clip(gold_probs_test, 0.01, 0.99)
-        brier_gold = brier_score_loss(ywin_test, gold_clipped)
-
-        print(f"\n  Gold-model-only (test set):")
-        print(f"    Log Loss:  {ll_gold:.4f}")
-        print(f"    Accuracy:  {acc_gold:.1%}")
-        print(f"    Brier:     {brier_gold:.4f}")
-
-        # --- Logistic blend on logits ---
-        # Convert to logits (clip to avoid inf)
         def safe_logit(p):
             p = np.clip(p, 0.001, 0.999)
             return np.log(p / (1 - p))
 
-        logit_elo = safe_logit(elo_test)
-        logit_gold = safe_logit(gold_probs_test)
+        def sigmoid(x):
+            return 1.0 / (1.0 + np.exp(-x))
 
-        # Stack: [logit_elo, logit_gold] → LogisticRegression → blended prob
-        X_blend = np.column_stack([logit_elo, logit_gold])
+        # ---- What goes into ELO ----
+        print(f"\n  WHAT THE ELO PREDICTION USES:")
+        print(f"    • Regional priors (LCK=1586, LPL=1353, LEC=1169, etc.)")
+        print(f"    • K=32 standard ELO updates after each game result")
+        print(f"    • Win prob: E = 1 / (1 + 10^((Rb - Ra) / 400))")
+        print(f"    • That's it — no player info, no gold, no rolling stats")
+        print(f"    • The regional priors do the heavy lifting for cross-region")
 
-        # Use first 50% of test for fitting blend, last 50% for final eval
-        blend_split = len(X_blend) // 2
-        X_blend_fit, X_blend_eval = X_blend[:blend_split], X_blend[blend_split:]
-        y_blend_fit, y_blend_eval = ywin_test[:blend_split], ywin_test[blend_split:]
+        # ---- Prepare signals on test set ----
+        logit_elo_test = safe_logit(elo_test)
+        pelo_test_norm = pelo_test / 400.0  # Normalize: 400 Elo diff ≈ 1 logit unit
+        pred_gd10_test = self.model_gd10.predict(X_test_s)
+        pred_gd10_norm = pred_gd10_test / 1000.0  # Normalize: 1000g ≈ 1 logit unit
+
+        # Split test: first 50% for fitting, last 50% for eval
+        blend_split = len(elo_test) // 2
+        y_fit, y_eval = ywin_test[:blend_split], ywin_test[blend_split:]
+
+        # Prepare fit/eval arrays
+        logit_elo_fit = logit_elo_test[:blend_split]
+        logit_elo_eval = logit_elo_test[blend_split:]
+        pelo_fit = pelo_test_norm[:blend_split]
+        pelo_eval = pelo_test_norm[blend_split:]
+        gd10_fit = pred_gd10_norm[:blend_split]
+        gd10_eval = pred_gd10_norm[blend_split:]
         elo_eval = elo_test[blend_split:]
-        gold_eval = gold_probs_test[blend_split:]
 
-        self.blend_model = LogisticRegression(C=1.0, max_iter=1000)
-        self.blend_model.fit(X_blend_fit, y_blend_fit)
+        # ---- Fit 4 layered models ----
+        models = {}
+        model_names = [
+            ("Team ELO only", np.column_stack([logit_elo_fit]),
+             np.column_stack([logit_elo_eval])),
+            ("ELO + Player ELO", np.column_stack([logit_elo_fit, pelo_fit]),
+             np.column_stack([logit_elo_eval, pelo_eval])),
+            ("ELO + Gold tilt", np.column_stack([logit_elo_fit, gd10_fit]),
+             np.column_stack([logit_elo_eval, gd10_eval])),
+            ("ELO + Player + Gold", np.column_stack([logit_elo_fit, pelo_fit, gd10_fit]),
+             np.column_stack([logit_elo_eval, pelo_eval, gd10_eval])),
+        ]
 
-        # Blend coefficients
-        b0 = self.blend_model.intercept_[0]
-        b_elo = self.blend_model.coef_[0][0]
-        b_gold = self.blend_model.coef_[0][1]
+        print(f"\n  LAYERED RESULTS (fit on {blend_split} games, eval on {len(y_eval)} games):")
+        print(f"  {'Model':<25} {'Log Loss':>10} {'Accuracy':>10} {'Brier':>10} {'Δ LL vs ELO':>12}")
+        print(f"  {'-'*67}")
 
-        print(f"\n  Blend coefficients (logistic stacking):")
-        print(f"    intercept:    {b0:+.4f}")
-        print(f"    β_elo:        {b_elo:+.4f}  (weight on ELO logit)")
-        print(f"    β_gold:       {b_gold:+.4f}  (weight on Gold logit)")
-        elo_share = abs(b_elo) / (abs(b_elo) + abs(b_gold)) * 100
-        gold_share = abs(b_gold) / (abs(b_elo) + abs(b_gold)) * 100
-        print(f"    → ELO share: {elo_share:.0f}%, Gold share: {gold_share:.0f}%")
+        results = {}
+        baseline_ll = None
+        for name, X_fit, X_ev in model_names:
+            lr = LogisticRegression(C=1.0, max_iter=1000)
+            lr.fit(X_fit, y_fit)
+            probs = lr.predict_proba(X_ev)[:, 1]
+            probs_c = np.clip(probs, 0.01, 0.99)
 
-        # Blended predictions on eval set
-        blend_probs_eval = self.blend_model.predict_proba(X_blend_eval)[:, 1]
-        blend_clipped = np.clip(blend_probs_eval, 0.01, 0.99)
+            ll = log_loss(y_eval, probs_c)
+            acc = accuracy_score(y_eval, (probs > 0.5).astype(int))
+            brier = brier_score_loss(y_eval, probs_c)
 
-        elo_eval_clipped = np.clip(elo_eval, 0.01, 0.99)
-        gold_eval_clipped = np.clip(gold_eval, 0.01, 0.99)
+            if baseline_ll is None:
+                baseline_ll = ll
+                delta_str = f"{'baseline':>12}"
+            else:
+                delta = baseline_ll - ll
+                delta_str = f"{delta:>+12.4f}"
 
-        ll_elo_eval = log_loss(y_blend_eval, elo_eval_clipped)
-        ll_gold_eval = log_loss(y_blend_eval, gold_eval_clipped)
-        ll_blend_eval = log_loss(y_blend_eval, blend_clipped)
+            print(f"  {name:<25} {ll:>10.4f} {acc:>9.1%} {brier:>10.4f} {delta_str}")
+            results[name] = {"ll": ll, "acc": acc, "brier": brier, "probs": probs, "model": lr}
+            models[name] = lr
 
-        acc_elo_eval = accuracy_score(y_blend_eval, (elo_eval > 0.5).astype(int))
-        acc_gold_eval = accuracy_score(y_blend_eval, (gold_eval > 0.5).astype(int))
-        acc_blend_eval = accuracy_score(y_blend_eval, (blend_probs_eval > 0.5).astype(int))
+        # ---- Best model coefficients ----
+        best_name = "ELO + Player + Gold"
+        best_lr = models[best_name]
+        best_probs = results[best_name]["probs"]
+        print(f"\n  Coefficients for '{best_name}':")
+        print(f"    intercept:       {best_lr.intercept_[0]:+.4f}")
+        labels = ["β_elo (logit)", "β_player_elo", "β_gold_diff"]
+        for i, lab in enumerate(labels):
+            print(f"    {lab:<20} {best_lr.coef_[0][i]:+.4f}")
 
-        brier_elo_eval = brier_score_loss(y_blend_eval, elo_eval_clipped)
-        brier_gold_eval = brier_score_loss(y_blend_eval, gold_eval_clipped)
-        brier_blend_eval = brier_score_loss(y_blend_eval, blend_clipped)
+        # Store the best blend model for predictions
+        self.blend_model = best_lr
+        self._blend_type = "layered"  # Flag so predict_match knows the input format
 
-        print(f"\n  {'Model':<20} {'Log Loss':>10} {'Accuracy':>10} {'Brier':>10}")
-        print(f"  {'-'*50}")
-        print(f"  {'ELO only':<20} {ll_elo_eval:>10.4f} {acc_elo_eval:>9.1%} {brier_elo_eval:>10.4f}")
-        print(f"  {'Gold only':<20} {ll_gold_eval:>10.4f} {acc_gold_eval:>9.1%} {brier_gold_eval:>10.4f}")
-        print(f"  {'ELO+Gold blend':<20} {ll_blend_eval:>10.4f} {acc_blend_eval:>9.1%} {brier_blend_eval:>10.4f}")
+        # ---- Gold tilt interpretation ----
+        elo_gold_lr = models["ELO + Gold tilt"]
+        b_elo_coef = elo_gold_lr.coef_[0][0]
+        b_gold_coef = elo_gold_lr.coef_[0][1]
+        print(f"\n  GOLD TILT INTERPRETATION (ELO + Gold model):")
+        print(f"    β_elo:  {b_elo_coef:+.4f}")
+        print(f"    β_gold: {b_gold_coef:+.4f}")
+        print(f"    → +1000g predicted gold@10 shifts logit by {b_gold_coef:+.3f}")
+        # Show practical examples
+        for gd_example in [500, 1000, 2000]:
+            logit_shift = b_gold_coef * (gd_example / 1000.0)
+            # Show shift at a few ELO probs
+            for elo_p in [0.50, 0.65, 0.80]:
+                base_logit = safe_logit(elo_p)
+                new_prob = sigmoid(b_elo_coef * base_logit + logit_shift + elo_gold_lr.intercept_[0])
+                shift = new_prob - elo_p
+                print(f"    +{gd_example}g at ELO {elo_p:.0%}: {elo_p:.1%} → {new_prob:.1%} ({shift:+.1%})")
 
-        # Marginal gain
-        ll_gain = ll_elo_eval - ll_blend_eval
-        acc_gain = acc_blend_eval - acc_elo_eval
-        brier_gain = brier_elo_eval - brier_blend_eval
-        print(f"\n  Marginal gain (blend vs ELO):")
-        print(f"    Log Loss:  {ll_gain:+.4f} ({'better' if ll_gain > 0 else 'worse'})")
-        print(f"    Accuracy:  {acc_gain:+.1%}")
-        print(f"    Brier:     {brier_gain:+.4f} ({'better' if brier_gain > 0 else 'worse'})")
+        # ---- Is the gold tilt idea naive? ----
+        elo_gold_ll = results["ELO + Gold tilt"]["ll"]
+        elo_only_ll = results["Team ELO only"]["ll"]
+        elo_pelo_ll = results["ELO + Player ELO"]["ll"]
+        full_ll = results["ELO + Player + Gold"]["ll"]
+        print(f"\n  IS THE GOLD TILT NAIVE?")
+        print(f"    No — it's the simplest useful signal on top of ELO.")
+        gold_gain = elo_only_ll - elo_gold_ll
+        pelo_gain = elo_only_ll - elo_pelo_ll
+        full_gain = elo_only_ll - full_ll
+        print(f"    Player ELO alone adds:  {pelo_gain:+.4f} log loss")
+        print(f"    Gold tilt alone adds:   {gold_gain:+.4f} log loss")
+        print(f"    Both together add:      {full_gain:+.4f} log loss")
+        if gold_gain > 0 and gold_gain > pelo_gain:
+            print(f"    → Gold tilt adds MORE than player ELO.")
+        elif gold_gain > 0:
+            print(f"    → Both add signal, but player ELO contributes more.")
+        else:
+            print(f"    → Gold tilt doesn't help here (ELO already captures it).")
 
-        # --- Breakdown by ELO confidence bucket ---
-        print(f"\n  Marginal gain by ELO confidence bucket:")
-        print(f"  {'ELO Range':<20} {'N':>5} {'ELO LL':>8} {'Blend LL':>9} {'Δ LL':>8} {'ELO Acc':>8} {'Blend Acc':>9} {'Δ Acc':>7}")
+        # ---- Breakdown by ELO confidence bucket ----
+        print(f"\n  MARGINAL GAIN BY ELO CONFIDENCE (best model vs ELO):")
+        print(f"  {'Bucket':<20} {'N':>5} {'ELO LL':>8} {'Blend LL':>9} {'Δ LL':>8} {'ELO Acc':>8} {'Blend Acc':>9} {'Δ Acc':>7}")
         print(f"  {'-'*75}")
 
         buckets = [
-            ("50-55% (toss-up)", 0.45, 0.55),
-            ("55-60% (lean)", 0.40, 0.45),
-            ("60-70% (clear)", 0.30, 0.40),
+            ("50-55% (toss-up)", 0.00, 0.05),
+            ("55-60% (lean)", 0.05, 0.10),
+            ("60-70% (clear)", 0.10, 0.20),
             ("70-80% (strong)", 0.20, 0.30),
-            ("80%+ (dominant)", 0.00, 0.20),
+            ("80%+ (dominant)", 0.30, 0.50),
         ]
 
         for label, lo_dist, hi_dist in buckets:
-            # Distance from 0.5 for each ELO prob
             dist = np.abs(elo_eval - 0.5)
             mask = (dist >= lo_dist) & (dist < hi_dist)
             n = mask.sum()
@@ -358,36 +418,34 @@ class GoldPredictionModel:
                 continue
 
             elo_b = np.clip(elo_eval[mask], 0.01, 0.99)
-            blend_b = np.clip(blend_probs_eval[mask], 0.01, 0.99)
-            y_b = y_blend_eval[mask]
+            blend_b = np.clip(best_probs[mask], 0.01, 0.99)
+            y_b = y_eval[mask]
 
             ll_e = log_loss(y_b, elo_b)
             ll_bl = log_loss(y_b, blend_b)
             acc_e = accuracy_score(y_b, (elo_eval[mask] > 0.5).astype(int))
-            acc_bl = accuracy_score(y_b, (blend_probs_eval[mask] > 0.5).astype(int))
+            acc_bl = accuracy_score(y_b, (best_probs[mask] > 0.5).astype(int))
 
             print(f"  {label:<20} {n:>5} {ll_e:>8.4f} {ll_bl:>9.4f} {ll_e-ll_bl:>+8.4f} {acc_e:>7.1%} {acc_bl:>9.1%} {acc_bl-acc_e:>+6.1%}")
 
-        # --- How much does blend shift the odds? ---
-        print(f"\n  Average odds shift (blend vs ELO):")
-        shifts = blend_probs_eval - elo_eval
+        # ---- Odds shift distribution ----
+        shifts = best_probs - elo_eval
         abs_shifts = np.abs(shifts)
+        print(f"\n  ODDS SHIFT (best blend vs ELO):")
         print(f"    Mean absolute shift: {np.mean(abs_shifts):.1%}")
         print(f"    Median shift:        {np.median(abs_shifts):.1%}")
         print(f"    Max shift:           {np.max(abs_shifts):.1%}")
-        print(f"    Std of shifts:       {np.std(shifts):.1%}")
-
-        # Distribution of shift sizes
-        print(f"\n  Shift distribution:")
         for thresh in [0.01, 0.02, 0.05, 0.10]:
             pct = (abs_shifts >= thresh).mean()
             print(f"    ≥{thresh:.0%} shift:  {pct:.1%} of games")
 
         self.blend_metrics = {
-            "ll_elo": ll_elo_eval, "ll_gold": ll_gold_eval, "ll_blend": ll_blend_eval,
-            "acc_elo": acc_elo_eval, "acc_gold": acc_gold_eval, "acc_blend": acc_blend_eval,
-            "brier_elo": brier_elo_eval, "brier_gold": brier_gold_eval, "brier_blend": brier_blend_eval,
-            "blend_intercept": b0, "blend_b_elo": b_elo, "blend_b_gold": b_gold,
+            "ll_elo": results["Team ELO only"]["ll"],
+            "ll_elo_pelo": results["ELO + Player ELO"]["ll"],
+            "ll_elo_gold": results["ELO + Gold tilt"]["ll"],
+            "ll_blend": results["ELO + Player + Gold"]["ll"],
+            "acc_elo": results["Team ELO only"]["acc"],
+            "acc_blend": results["ELO + Player + Gold"]["acc"],
         }
 
         # Slow-comp residual analysis
@@ -651,15 +709,23 @@ class GoldPredictionModel:
         # Slow-comp residual: difference between gd20 and what gd10 growth would predict
         scaling = gd20 - gd10
 
-        # Compute blended probability (ELO + Gold)
+        # Compute blended probability (ELO + Player ELO + Gold tilt)
         elo_prob = self.team_elo.expected(team_a, team_b)
         if self.blend_model is not None:
             def safe_logit(p):
                 p = np.clip(p, 0.001, 0.999)
                 return np.log(p / (1 - p))
             logit_e = safe_logit(elo_prob)
-            logit_g = safe_logit(gold_win_prob)
-            blend_input = np.array([[logit_e, logit_g]])
+
+            # Player ELO diff (avg across positions)
+            roster_a_elos = [self.player_elo.get_rating(p) for p in roster_a.values()] or [1500.0]
+            roster_b_elos = [self.player_elo.get_rating(p) for p in roster_b.values()] or [1500.0]
+            pelo_diff = (np.mean(roster_a_elos) - np.mean(roster_b_elos)) / 400.0
+
+            # Predicted gold@10 tilt
+            gd10_norm = gd10 / 1000.0
+
+            blend_input = np.array([[logit_e, pelo_diff, gd10_norm]])
             win_prob = self.blend_model.predict_proba(blend_input)[0][1]
         else:
             win_prob = gold_win_prob
