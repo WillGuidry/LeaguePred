@@ -888,9 +888,13 @@ def print_prediction(pred: dict):
 
 
 WORLDS_LEAGUES = [
+    # Major domestic leagues (worlds-qualifying)
     "LCK", "LPL", "LEC", "LCS", "LCP", "PCS",
     "CBLOL", "VCS", "LTA N", "LTA S", "LLA", "LJL", "TCL",
-    "MSI", "WLDs",
+    # Challengers / academy (feed rosters into majors)
+    "LCKC", "LDL", "NACL",
+    # International events
+    "MSI", "WLDs", "EWC", "Asia Master", "ASI", "FST", "KeSPA",
 ]
 
 
