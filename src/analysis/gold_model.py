@@ -1,16 +1,20 @@
 """
-Gold Prediction Model
----------------------
-Trains XGBoost models on pre-game features to predict:
+Gold Prediction Model + ELO Blend
+----------------------------------
+Trains gradient boosting models on pre-game features to predict:
     1. Gold differential at 10 minutes
     2. Gold differential at 20 minutes
     3. Win probability
 
-Uses the feature engineering from gold_pca.py (player Elo, lane winrates,
-momentum, champion features, etc.) with the slow-comp residual insight:
-    gold_residual_10_to_20 = actual_gd20 - predicted_gd20_from_gd10
+Then blends the gold-model win probability with pure ELO to find the
+optimal combination. The gold model captures signal that ELO misses
+(player matchups, rolling form, champion comfort, scaling tendencies)
+but ELO already captures most of the variance. The blend finds the
+marginal gain from gold features on top of ELO.
 
-This residual identifies teams/comps that scale (negative gd10 but positive gd20).
+Blend method: logistic stacking
+    logit(p_blend) = β0 + β1·logit(p_elo) + β2·logit(p_gold)
+    Trained on the temporal test set via LogisticRegression.
 
 Usage:
     python -m src.analysis.gold_model <csv_path> --predict "Team A" "Team B" [--league LEAGUE]
@@ -22,7 +26,8 @@ import numpy as np
 import pandas as pd
 from collections import defaultdict
 from sklearn.model_selection import TimeSeriesSplit
-from sklearn.metrics import mean_absolute_error, r2_score
+from sklearn.metrics import mean_absolute_error, r2_score, log_loss, accuracy_score, brier_score_loss
+from sklearn.linear_model import LogisticRegression
 
 # Use gradient boosting from sklearn (no xgboost dependency needed)
 from sklearn.ensemble import GradientBoostingRegressor, GradientBoostingClassifier
@@ -68,6 +73,10 @@ class GoldPredictionModel:
         self.scaler = None
         self.feature_names = build_feature_names()
 
+        # Blend model (ELO + Gold → combined probability)
+        self.blend_model = None  # LogisticRegression on logits
+        self.blend_metrics = {}  # Backtest results
+
         # Track team->league mapping
         self.team_leagues = {}
 
@@ -94,6 +103,7 @@ class GoldPredictionModel:
         targets_gd10 = []
         targets_gd20 = []
         targets_win = []
+        elo_probs = []  # Pure ELO probability for team_a (captured BEFORE update)
         valid_mask = []
 
         print(f"Processing {len(games)} games chronologically...")
@@ -115,6 +125,10 @@ class GoldPredictionModel:
             # Init Elo
             self.team_elo.get_rating(team_a, league)
             self.team_elo.get_rating(team_b, league)
+
+            # Capture pure ELO probability BEFORE update (no leakage)
+            elo_prob_a = self.team_elo.expected(team_a, team_b)
+            elo_probs.append(elo_prob_a)
 
             # === PREDICT PHASE ===
             game_player_data = pg_index.get(game["gameid"], [])
@@ -149,6 +163,7 @@ class GoldPredictionModel:
         y_gd10 = np.array(targets_gd10)
         y_gd20 = np.array(targets_gd20)
         y_win = np.array(targets_win)
+        elo_p = np.array(elo_probs)
         valid = np.array(valid_mask)
 
         print(f"Total: {len(X)} games, {valid.sum()} valid for training")
@@ -158,6 +173,7 @@ class GoldPredictionModel:
         y10_v = y_gd10[valid]
         y20_v = y_gd20[valid]
         ywin_v = y_win[valid]
+        elo_v = elo_p[valid]
 
         # Handle NaN in gd20
         gd20_valid = ~np.isnan(y20_v) & (y20_v != 0.0)
@@ -168,6 +184,7 @@ class GoldPredictionModel:
         y10_train, y10_test = y10_v[:split_idx], y10_v[split_idx:]
         y20_train, y20_test = y20_v[:split_idx], y20_v[split_idx:]
         ywin_train, ywin_test = ywin_v[:split_idx], ywin_v[split_idx:]
+        elo_train, elo_test = elo_v[:split_idx], elo_v[split_idx:]
 
         # Standardize
         self.scaler = StandardScaler()
@@ -210,11 +227,10 @@ class GoldPredictionModel:
             subsample=0.8, min_samples_leaf=10, random_state=42
         )
         self.model_win.fit(X_train_s, ywin_train)
-        pred_win = self.model_win.predict_proba(X_test_s)[:, 1]
-        from sklearn.metrics import log_loss, accuracy_score
-        ll = log_loss(ywin_test, pred_win)
-        acc = accuracy_score(ywin_test, (pred_win > 0.5).astype(int))
-        print(f"  Win Prob — Log Loss: {ll:.4f}, Accuracy: {acc:.1%}")
+        gold_probs_test = self.model_win.predict_proba(X_test_s)[:, 1]
+        ll_gold = log_loss(ywin_test, gold_probs_test)
+        acc_gold = accuracy_score(ywin_test, (gold_probs_test > 0.5).astype(int))
+        print(f"  Win Prob — Log Loss: {ll_gold:.4f}, Accuracy: {acc_gold:.1%}")
 
         # Feature importance (top 20 for gold@10)
         importances = self.model_gd10.feature_importances_
@@ -223,18 +239,167 @@ class GoldPredictionModel:
         for j in top_idx:
             print(f"  {self.feature_names[j]:<55} {importances[j]:.4f}")
 
+        # =================================================================
+        # ELO + GOLD BLEND ANALYSIS
+        # =================================================================
+        print(f"\n{'='*70}")
+        print("ELO + GOLD BLEND ANALYSIS")
+        print(f"{'='*70}")
+
+        # --- ELO-only metrics on test set ---
+        elo_clipped = np.clip(elo_test, 0.01, 0.99)
+        ll_elo = log_loss(ywin_test, elo_clipped)
+        acc_elo = accuracy_score(ywin_test, (elo_test > 0.5).astype(int))
+        brier_elo = brier_score_loss(ywin_test, elo_clipped)
+
+        print(f"\n  ELO-only (test set, {len(ywin_test)} games):")
+        print(f"    Log Loss:  {ll_elo:.4f}")
+        print(f"    Accuracy:  {acc_elo:.1%}")
+        print(f"    Brier:     {brier_elo:.4f}")
+
+        # --- Gold-only metrics ---
+        gold_clipped = np.clip(gold_probs_test, 0.01, 0.99)
+        brier_gold = brier_score_loss(ywin_test, gold_clipped)
+
+        print(f"\n  Gold-model-only (test set):")
+        print(f"    Log Loss:  {ll_gold:.4f}")
+        print(f"    Accuracy:  {acc_gold:.1%}")
+        print(f"    Brier:     {brier_gold:.4f}")
+
+        # --- Logistic blend on logits ---
+        # Convert to logits (clip to avoid inf)
+        def safe_logit(p):
+            p = np.clip(p, 0.001, 0.999)
+            return np.log(p / (1 - p))
+
+        logit_elo = safe_logit(elo_test)
+        logit_gold = safe_logit(gold_probs_test)
+
+        # Stack: [logit_elo, logit_gold] → LogisticRegression → blended prob
+        X_blend = np.column_stack([logit_elo, logit_gold])
+
+        # Use first 50% of test for fitting blend, last 50% for final eval
+        blend_split = len(X_blend) // 2
+        X_blend_fit, X_blend_eval = X_blend[:blend_split], X_blend[blend_split:]
+        y_blend_fit, y_blend_eval = ywin_test[:blend_split], ywin_test[blend_split:]
+        elo_eval = elo_test[blend_split:]
+        gold_eval = gold_probs_test[blend_split:]
+
+        self.blend_model = LogisticRegression(C=1.0, max_iter=1000)
+        self.blend_model.fit(X_blend_fit, y_blend_fit)
+
+        # Blend coefficients
+        b0 = self.blend_model.intercept_[0]
+        b_elo = self.blend_model.coef_[0][0]
+        b_gold = self.blend_model.coef_[0][1]
+
+        print(f"\n  Blend coefficients (logistic stacking):")
+        print(f"    intercept:    {b0:+.4f}")
+        print(f"    β_elo:        {b_elo:+.4f}  (weight on ELO logit)")
+        print(f"    β_gold:       {b_gold:+.4f}  (weight on Gold logit)")
+        elo_share = abs(b_elo) / (abs(b_elo) + abs(b_gold)) * 100
+        gold_share = abs(b_gold) / (abs(b_elo) + abs(b_gold)) * 100
+        print(f"    → ELO share: {elo_share:.0f}%, Gold share: {gold_share:.0f}%")
+
+        # Blended predictions on eval set
+        blend_probs_eval = self.blend_model.predict_proba(X_blend_eval)[:, 1]
+        blend_clipped = np.clip(blend_probs_eval, 0.01, 0.99)
+
+        elo_eval_clipped = np.clip(elo_eval, 0.01, 0.99)
+        gold_eval_clipped = np.clip(gold_eval, 0.01, 0.99)
+
+        ll_elo_eval = log_loss(y_blend_eval, elo_eval_clipped)
+        ll_gold_eval = log_loss(y_blend_eval, gold_eval_clipped)
+        ll_blend_eval = log_loss(y_blend_eval, blend_clipped)
+
+        acc_elo_eval = accuracy_score(y_blend_eval, (elo_eval > 0.5).astype(int))
+        acc_gold_eval = accuracy_score(y_blend_eval, (gold_eval > 0.5).astype(int))
+        acc_blend_eval = accuracy_score(y_blend_eval, (blend_probs_eval > 0.5).astype(int))
+
+        brier_elo_eval = brier_score_loss(y_blend_eval, elo_eval_clipped)
+        brier_gold_eval = brier_score_loss(y_blend_eval, gold_eval_clipped)
+        brier_blend_eval = brier_score_loss(y_blend_eval, blend_clipped)
+
+        print(f"\n  {'Model':<20} {'Log Loss':>10} {'Accuracy':>10} {'Brier':>10}")
+        print(f"  {'-'*50}")
+        print(f"  {'ELO only':<20} {ll_elo_eval:>10.4f} {acc_elo_eval:>9.1%} {brier_elo_eval:>10.4f}")
+        print(f"  {'Gold only':<20} {ll_gold_eval:>10.4f} {acc_gold_eval:>9.1%} {brier_gold_eval:>10.4f}")
+        print(f"  {'ELO+Gold blend':<20} {ll_blend_eval:>10.4f} {acc_blend_eval:>9.1%} {brier_blend_eval:>10.4f}")
+
+        # Marginal gain
+        ll_gain = ll_elo_eval - ll_blend_eval
+        acc_gain = acc_blend_eval - acc_elo_eval
+        brier_gain = brier_elo_eval - brier_blend_eval
+        print(f"\n  Marginal gain (blend vs ELO):")
+        print(f"    Log Loss:  {ll_gain:+.4f} ({'better' if ll_gain > 0 else 'worse'})")
+        print(f"    Accuracy:  {acc_gain:+.1%}")
+        print(f"    Brier:     {brier_gain:+.4f} ({'better' if brier_gain > 0 else 'worse'})")
+
+        # --- Breakdown by ELO confidence bucket ---
+        print(f"\n  Marginal gain by ELO confidence bucket:")
+        print(f"  {'ELO Range':<20} {'N':>5} {'ELO LL':>8} {'Blend LL':>9} {'Δ LL':>8} {'ELO Acc':>8} {'Blend Acc':>9} {'Δ Acc':>7}")
+        print(f"  {'-'*75}")
+
+        buckets = [
+            ("50-55% (toss-up)", 0.45, 0.55),
+            ("55-60% (lean)", 0.40, 0.45),
+            ("60-70% (clear)", 0.30, 0.40),
+            ("70-80% (strong)", 0.20, 0.30),
+            ("80%+ (dominant)", 0.00, 0.20),
+        ]
+
+        for label, lo_dist, hi_dist in buckets:
+            # Distance from 0.5 for each ELO prob
+            dist = np.abs(elo_eval - 0.5)
+            mask = (dist >= lo_dist) & (dist < hi_dist)
+            n = mask.sum()
+            if n < 10:
+                print(f"  {label:<20} {n:>5}   (too few games)")
+                continue
+
+            elo_b = np.clip(elo_eval[mask], 0.01, 0.99)
+            blend_b = np.clip(blend_probs_eval[mask], 0.01, 0.99)
+            y_b = y_blend_eval[mask]
+
+            ll_e = log_loss(y_b, elo_b)
+            ll_bl = log_loss(y_b, blend_b)
+            acc_e = accuracy_score(y_b, (elo_eval[mask] > 0.5).astype(int))
+            acc_bl = accuracy_score(y_b, (blend_probs_eval[mask] > 0.5).astype(int))
+
+            print(f"  {label:<20} {n:>5} {ll_e:>8.4f} {ll_bl:>9.4f} {ll_e-ll_bl:>+8.4f} {acc_e:>7.1%} {acc_bl:>9.1%} {acc_bl-acc_e:>+6.1%}")
+
+        # --- How much does blend shift the odds? ---
+        print(f"\n  Average odds shift (blend vs ELO):")
+        shifts = blend_probs_eval - elo_eval
+        abs_shifts = np.abs(shifts)
+        print(f"    Mean absolute shift: {np.mean(abs_shifts):.1%}")
+        print(f"    Median shift:        {np.median(abs_shifts):.1%}")
+        print(f"    Max shift:           {np.max(abs_shifts):.1%}")
+        print(f"    Std of shifts:       {np.std(shifts):.1%}")
+
+        # Distribution of shift sizes
+        print(f"\n  Shift distribution:")
+        for thresh in [0.01, 0.02, 0.05, 0.10]:
+            pct = (abs_shifts >= thresh).mean()
+            print(f"    ≥{thresh:.0%} shift:  {pct:.1%} of games")
+
+        self.blend_metrics = {
+            "ll_elo": ll_elo_eval, "ll_gold": ll_gold_eval, "ll_blend": ll_blend_eval,
+            "acc_elo": acc_elo_eval, "acc_gold": acc_gold_eval, "acc_blend": acc_blend_eval,
+            "brier_elo": brier_elo_eval, "brier_gold": brier_gold_eval, "brier_blend": brier_blend_eval,
+            "blend_intercept": b0, "blend_b_elo": b_elo, "blend_b_gold": b_gold,
+        }
+
         # Slow-comp residual analysis
         print(f"\n{'='*70}")
         print("SLOW-COMP RESIDUAL ANALYSIS")
         print(f"{'='*70}")
         if gd20_test_mask.sum() > 0:
-            # Predicted GD20 from the model vs actual
             pred_20_all = self.model_gd20.predict(X_test_s[gd20_test_mask])
             pred_10_for20 = self.model_gd10.predict(X_test_s[gd20_test_mask])
             actual_20 = y20_test[gd20_test_mask]
             actual_10 = y10_test[gd20_test_mask]
 
-            # Residual: how much does gold grow beyond what gd10 predicts?
             scaling_factor = actual_20 - actual_10
             predicted_scaling = pred_20_all - pred_10_for20
             residual = scaling_factor - predicted_scaling
@@ -242,13 +407,12 @@ class GoldPredictionModel:
             print(f"  Avg predicted growth: {np.mean(predicted_scaling):+.0f}g")
             print(f"  Avg residual: {np.mean(residual):+.0f}g")
             print(f"  Residual std: {np.std(residual):.0f}g")
-            print(f"  This residual identifies 'slow comps' — high residual = team")
-            print(f"  outperforms their early gold state between 10-20 min")
 
         return {
             "gd10_mae": mae_10, "gd10_r2": r2_10,
             "gd20_mae": mae_20, "gd20_r2": r2_20,
-            "win_logloss": ll, "win_accuracy": acc,
+            "win_logloss": ll_gold, "win_accuracy": acc_gold,
+            **self.blend_metrics,
         }
 
     def _extract_features(self, team_a, team_b, league, game_player_data, game=None):
@@ -482,10 +646,23 @@ class GoldPredictionModel:
 
         gd10 = self.model_gd10.predict(row_scaled)[0]
         gd20 = self.model_gd20.predict(row_scaled)[0]
-        win_prob = self.model_win.predict_proba(row_scaled)[0][1]
+        gold_win_prob = self.model_win.predict_proba(row_scaled)[0][1]
 
         # Slow-comp residual: difference between gd20 and what gd10 growth would predict
         scaling = gd20 - gd10
+
+        # Compute blended probability (ELO + Gold)
+        elo_prob = self.team_elo.expected(team_a, team_b)
+        if self.blend_model is not None:
+            def safe_logit(p):
+                p = np.clip(p, 0.001, 0.999)
+                return np.log(p / (1 - p))
+            logit_e = safe_logit(elo_prob)
+            logit_g = safe_logit(gold_win_prob)
+            blend_input = np.array([[logit_e, logit_g]])
+            win_prob = self.blend_model.predict_proba(blend_input)[0][1]
+        else:
+            win_prob = gold_win_prob
 
         # Team context
         elo_a = self.team_elo.get_rating(team_a, league)
@@ -512,6 +689,9 @@ class GoldPredictionModel:
             "gold_scaling_10_to_20": scaling,
             "win_prob_a": win_prob,
             "win_prob_b": 1 - win_prob,
+            "elo_win_prob_a": elo_prob,
+            "gold_win_prob_a": gold_win_prob,
+            "blend_win_prob_a": win_prob,
             "elo_a": elo_a,
             "elo_b": elo_b,
             "elo_diff": elo_a - elo_b,
@@ -541,13 +721,16 @@ class GoldPredictionModel:
 
 
 def print_prediction(pred: dict):
-    """Pretty-print a match prediction."""
+    """Pretty-print a match prediction with ELO+Gold blend breakdown."""
     ta = pred["team_a"]
     tb = pred["team_b"]
     gd10 = pred["pred_gd10"]
     gd20 = pred["pred_gd20"]
     scaling = pred["gold_scaling_10_to_20"]
     wp_a = pred["win_prob_a"]
+    elo_wp = pred.get("elo_win_prob_a", wp_a)
+    gold_wp = pred.get("gold_win_prob_a", wp_a)
+    blend_wp = pred.get("blend_win_prob_a", wp_a)
 
     fav = ta if wp_a > 0.5 else tb
     fav_pct = max(wp_a, 1 - wp_a)
@@ -556,12 +739,22 @@ def print_prediction(pred: dict):
     print(f"  {ta}  vs  {tb}")
     print(f"{'='*70}")
 
-    print(f"\n  Win Probability:")
-    bar_a = "█" * int(wp_a * 40)
-    bar_b = "█" * int((1 - wp_a) * 40)
-    print(f"    {ta:<20} {wp_a:>5.1%}  {bar_a}")
-    print(f"    {tb:<20} {1-wp_a:>5.1%}  {bar_b}")
+    # Blended win probability (main number)
+    print(f"\n  Win Probability (ELO+Gold Blend):")
+    bar_a = "█" * int(blend_wp * 40)
+    bar_b = "█" * int((1 - blend_wp) * 40)
+    print(f"    {ta:<20} {blend_wp:>5.1%}  {bar_a}")
+    print(f"    {tb:<20} {1-blend_wp:>5.1%}  {bar_b}")
     print(f"    → Favored: {fav} ({fav_pct:.1%})")
+
+    # Component breakdown
+    elo_shift = blend_wp - elo_wp
+    print(f"\n  Probability Breakdown:")
+    print(f"    {'ELO only:':<20} {ta} {elo_wp:>5.1%}  /  {tb} {1-elo_wp:>5.1%}")
+    print(f"    {'Gold model:':<20} {ta} {gold_wp:>5.1%}  /  {tb} {1-gold_wp:>5.1%}")
+    print(f"    {'ELO+Gold blend:':<20} {ta} {blend_wp:>5.1%}  /  {tb} {1-blend_wp:>5.1%}")
+    direction = ta if elo_shift > 0 else tb
+    print(f"    Gold tilt:         {abs(elo_shift):>+.1%} toward {direction}")
 
     print(f"\n  Gold Predictions:")
     gd10_fav = ta if gd10 > 0 else tb
@@ -628,18 +821,34 @@ def print_prediction(pred: dict):
     print()
 
 
+WORLDS_LEAGUES = [
+    "LCK", "LPL", "LEC", "LCS", "LCP", "PCS",
+    "CBLOL", "VCS", "LTA N", "LTA S", "LLA", "LJL", "TCL",
+    "MSI", "WLDs",
+]
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Gold prediction model")
+    parser = argparse.ArgumentParser(description="Gold prediction model + ELO blend")
     parser.add_argument("csv_path", help="Path to Oracle's Elixir CSV")
     parser.add_argument("--predict", nargs=2, action="append",
                         metavar=("TEAM_A", "TEAM_B"),
                         help="Predict a matchup (can specify multiple)")
-    parser.add_argument("--leagues", nargs="+", default=None)
+    parser.add_argument("--leagues", nargs="+", default=None,
+                        help="Leagues to include (default: worlds-qualifying leagues)")
+    parser.add_argument("--all-leagues", action="store_true",
+                        help="Use all leagues instead of worlds-only")
     parser.add_argument("--min-date", default=None)
     args = parser.parse_args()
 
+    # Default to worlds-qualifying leagues unless --all-leagues
+    leagues = args.leagues
+    if leagues is None and not args.all_leagues:
+        leagues = WORLDS_LEAGUES
+        print(f"Filtering to worlds-qualifying leagues: {', '.join(leagues)}")
+
     model = GoldPredictionModel()
-    metrics = model.process_and_train(args.csv_path, leagues=args.leagues,
+    metrics = model.process_and_train(args.csv_path, leagues=leagues,
                                        min_date=args.min_date)
 
     if args.predict:
