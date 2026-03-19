@@ -71,8 +71,12 @@ def build_engine(
         winner = row["winner"]
         league = row.get("league", None)
 
-        domestic_engine.add_team(team_a)
-        domestic_engine.add_team(team_b)
+        # Initialize teams at regional ELO priors (not flat 1500)
+        # This ensures LCK teams start higher than LCP/CBLOL teams
+        prior_a = REGIONAL_ELO_PRIORS.get(league, REGIONAL_ELO_DEFAULT) if league else None
+        prior_b = REGIONAL_ELO_PRIORS.get(league, REGIONAL_ELO_DEFAULT) if league else None
+        domestic_engine.add_team(team_a, elo=prior_a)
+        domestic_engine.add_team(team_b, elo=prior_b)
 
         if league:
             team_leagues[team_a] = league
