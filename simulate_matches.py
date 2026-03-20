@@ -26,8 +26,8 @@ INTERNATIONAL_LEAGUES = {"FST"}
 
 # Matches to predict
 MATCHES = [
-    ("Bilibili Gaming", "G2 Esports"),
-    ("BNK FEARX", "Team Secret Whales"),
+    ("BNK FEARX", "G2 Esports"),
+    ("JD Gaming", "LYON"),
 ]
 
 
