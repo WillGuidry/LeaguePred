@@ -10,21 +10,18 @@ sys.path.insert(0, ".")
 
 from src.elo.engine import EloEngine
 from src.config import REGIONAL_ELO_PRIORS
-from predict import print_prediction
+from predict import print_prediction, log_prediction
 
 
 # Team-to-league mapping for teams we want to simulate
 TEAM_LEAGUES = {
-    "Bilibili Gaming": "LPL",
-    "G2 Esports": "LEC",
-    "BNK FearX": "LCK",
-    "Team Secret Whales": "LCP",
+    "JDG": "LPL",
+    "BLG": "LPL",
 }
 
 # Matches to simulate
 MATCHES = [
-    ("Bilibili Gaming", "G2 Esports"),
-    ("BNK FearX", "Team Secret Whales"),
+    ("JDG", "BLG"),
 ]
 
 
@@ -52,6 +49,7 @@ def main():
         pred["league_b"] = league_b
         pred["cross_regional"] = False
         print_prediction(pred)
+        log_prediction(pred)
 
 
 if __name__ == "__main__":

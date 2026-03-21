@@ -17,7 +17,9 @@ What makes our version special:
     - Margin-of-victory modifier (when Module 1 is active)
 """
 
+import json
 import math
+import os
 from typing import Dict, Optional, Tuple
 
 
@@ -191,6 +193,35 @@ class EloEngine:
         if team in self.ratings:
             current = self.ratings[team]
             self.ratings[team] = current + severity * (self.default_elo - current)
+
+    # =========================================================================
+    # PERSISTENCE
+    # =========================================================================
+
+    def save(self, path: str) -> None:
+        """Save engine state (ratings, config) to a JSON file."""
+        state = {
+            "default_elo": self.default_elo,
+            "k_factor": self.k_factor,
+            "scale_factor": self.scale_factor,
+            "ratings": self.ratings,
+        }
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(state, f, indent=2)
+
+    @classmethod
+    def load(cls, path: str) -> "EloEngine":
+        """Load engine state from a JSON file."""
+        with open(path) as f:
+            state = json.load(f)
+        engine = cls(
+            default_elo=state["default_elo"],
+            k_factor=state["k_factor"],
+            scale_factor=state["scale_factor"],
+        )
+        engine.ratings = state["ratings"]
+        return engine
 
     # =========================================================================
     # REPORTING

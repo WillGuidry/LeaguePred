@@ -21,15 +21,26 @@ Usage:
 """
 
 import argparse
+import json
+import os
 import sys
+from datetime import datetime
+from typing import Optional
+
 import pandas as pd
 import numpy as np
-from typing import Optional
 
 from src.data.loader import load_oracle_csv
 from src.elo.engine import EloEngine
 from src.elo.international import TournamentPredictor, PersistentInternationalElo
 from src.config import REGIONAL_ELO_PRIORS, REGIONAL_ELO_DEFAULT, INTERNATIONAL_EVENTS
+
+# Default paths for cached model state
+CACHE_DIR = "data/processed"
+ENGINE_CACHE = os.path.join(CACHE_DIR, "elo_engine.json")
+INTL_CACHE = os.path.join(CACHE_DIR, "intl_elo.json")
+LEAGUES_CACHE = os.path.join(CACHE_DIR, "team_leagues.json")
+PREDICTIONS_LOG = os.path.join(CACHE_DIR, "predictions.jsonl")
 
 
 # Major leagues to include when building Elo ratings
@@ -129,7 +140,52 @@ def build_engine(
     if persistent_intl._current_date is None:
         persistent_intl._current_date = pd.Timestamp.now()
 
+    # Save to cache so subsequent runs don't rebuild from scratch
+    save_engine(domestic_engine, team_leagues, persistent_intl)
+
     return domestic_engine, team_leagues, persistent_intl
+
+
+def save_engine(
+    engine: EloEngine,
+    team_leagues: dict,
+    persistent_intl: PersistentInternationalElo,
+) -> None:
+    """Save engine state to disk for reuse."""
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    engine.save(ENGINE_CACHE)
+    persistent_intl.save(INTL_CACHE)
+    with open(LEAGUES_CACHE, "w") as f:
+        json.dump(team_leagues, f, indent=2)
+    print(f"  [saved model state to {CACHE_DIR}/]")
+
+
+def load_engine() -> tuple:
+    """
+    Load previously saved engine state from disk.
+    Returns (engine, team_leagues, persistent_intl) or None if no cache exists.
+    """
+    if not (os.path.exists(ENGINE_CACHE) and os.path.exists(INTL_CACHE)
+            and os.path.exists(LEAGUES_CACHE)):
+        return None
+    try:
+        engine = EloEngine.load(ENGINE_CACHE)
+        persistent_intl = PersistentInternationalElo.load(INTL_CACHE)
+        with open(LEAGUES_CACHE) as f:
+            team_leagues = json.load(f)
+        print(f"  [loaded cached model from {CACHE_DIR}/]")
+        return engine, team_leagues, persistent_intl
+    except Exception as e:
+        print(f"  [cache load failed: {e}, rebuilding...]")
+        return None
+
+
+def log_prediction(pred: dict) -> None:
+    """Append a prediction to the JSONL log file."""
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    entry = {**pred, "timestamp": datetime.now().isoformat()}
+    with open(PREDICTIONS_LOG, "a") as f:
+        f.write(json.dumps(entry, default=str) + "\n")
 
 
 def predict_international(
@@ -299,10 +355,16 @@ def main():
     parser.add_argument("--schedule", help="CSV with team_a, team_b columns to batch predict")
     parser.add_argument("--k-factor", type=float, default=32.0)
 
+    parser.add_argument("--rebuild", action="store_true",
+                        help="Force rebuild from data (ignore cache)")
     args = parser.parse_args()
 
-    # Build engine with persistent international Elo
-    engine, team_leagues, persistent_intl = build_engine(args.data, k_factor=args.k_factor)
+    # Try loading cached engine first, rebuild only if needed
+    cached = None if args.rebuild else load_engine()
+    if cached is not None:
+        engine, team_leagues, persistent_intl = cached
+    else:
+        engine, team_leagues, persistent_intl = build_engine(args.data, k_factor=args.k_factor)
 
     if args.rankings:
         if args.leagues:
@@ -319,6 +381,7 @@ def main():
                                  team_leagues, international=args.international,
                                  persistent_intl=persistent_intl)
             print_prediction(pred)
+            log_prediction(pred)
         return
 
     if args.team_a and args.team_b:
@@ -326,6 +389,7 @@ def main():
                              team_leagues, international=args.international,
                              persistent_intl=persistent_intl)
         print_prediction(pred)
+        log_prediction(pred)
         return
 
     parser.print_help()

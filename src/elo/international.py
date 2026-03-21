@@ -26,6 +26,9 @@ Leakage notes:
     - Tournament Elo only uses games already played in that event (safe)
 """
 
+import json
+import os
+
 import numpy as np
 import pandas as pd
 from typing import Optional
@@ -182,6 +185,53 @@ class PersistentInternationalElo:
                 self.ratings[team]
                 + self.decay_factor * (target - self.ratings[team])
             )
+
+    def save(self, path: str) -> None:
+        """Save persistent international Elo state to a JSON file."""
+        # Convert Timestamps to ISO strings for JSON serialization
+        serializable_history = {}
+        for team, entries in self._game_history.items():
+            serializable_history[team] = [
+                [dt.isoformat() if hasattr(dt, "isoformat") else str(dt), count]
+                for dt, count in entries
+            ]
+
+        state = {
+            "decay_factor": self.decay_factor,
+            "games_full_trust": self.games_full_trust,
+            "max_weight": self.max_weight,
+            "max_age_days": self.max_age_days,
+            "ratings": self.ratings,
+            "game_history": serializable_history,
+            "regional_priors": self._regional_priors,
+            "current_date": self._current_date.isoformat() if self._current_date else None,
+        }
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(state, f, indent=2)
+
+    @classmethod
+    def load(cls, path: str) -> "PersistentInternationalElo":
+        """Load persistent international Elo state from a JSON file."""
+        with open(path) as f:
+            state = json.load(f)
+        obj = cls(
+            decay_factor=state["decay_factor"],
+            games_full_trust=state["games_full_trust"],
+            max_weight=state["max_weight"],
+            max_age_days=state["max_age_days"],
+        )
+        obj.ratings = state["ratings"]
+        obj._regional_priors = state["regional_priors"]
+        obj._current_date = (
+            pd.Timestamp(state["current_date"]) if state["current_date"] else None
+        )
+        # Restore game history with Timestamps
+        for team, entries in state["game_history"].items():
+            obj._game_history[team] = [
+                (pd.Timestamp(dt_str), count) for dt_str, count in entries
+            ]
+        return obj
 
     def get_team_info(self, team: str) -> dict:
         """Debug info for a team's persistent international state."""
