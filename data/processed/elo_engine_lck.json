@@ -1,0 +1,17 @@
+{
+  "default_elo": 1500.0,
+  "k_factor": 32.0,
+  "scale_factor": 400.0,
+  "ratings": {
+    "DN SOOPers": 1310.1836183639475,
+    "KT Rolster": 1546.5066075482393,
+    "Dplus Kia": 1570.7214311490218,
+    "HANJIN BRION": 1420.3721544009347,
+    "Kiwoom DRX": 1423.6984881396286,
+    "Gen.G": 1657.0030767200474,
+    "Nongshim RedForce": 1388.0220043944244,
+    "BNK FEARX": 1459.1921364847192,
+    "T1": 1580.910462716212,
+    "Hanwha Life Esports": 1643.3900200828255
+  }
+}
